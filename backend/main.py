@@ -7,26 +7,39 @@ What lives here:
 - Welcome / health / version endpoints
 - Upload spreadsheet endpoint (Phase 1)
 - Snapshot save / list / get endpoints (Phase 2 — Time Machine)
+- AI analysis endpoint powered by Groq (Phase 3 — Insights)
 
-Architecture note (Day Zero):
-- We are using IN-MEMORY storage for snapshots (a Python list).
-- This is the Raft "log" concept applied to spreadsheets:
-    each saved snapshot is an entry in an append-only log.
-- The full spreadsheet at any point in time = "the Key-Value Store"
-    at that point.
-- Later we will replace this in-memory list with Supabase so snapshots
-  survive backend restarts.
+Architecture note:
+- Snapshots are stored in memory as an append-only log (Raft-style).
+- AI analysis uses Groq's Llama 3.3 70B model — free and very fast.
 """
 
-from datetime import datetime
+import json
+import os
+from datetime import date, datetime, time
 from io import BytesIO
 from typing import Any
 from uuid import uuid4
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from groq import Groq
 from openpyxl import load_workbook
 from pydantic import BaseModel
+
+# ============================================
+# Load environment variables from .env file
+# ============================================
+# This reads backend/.env and makes the keys available as environment variables.
+# .env is protected by .gitignore — it never goes to GitHub.
+load_dotenv()
+
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
+# Initialize Groq client only if the key was found
+groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
+
 
 # ============================================
 # Create the FastAPI application
@@ -34,7 +47,7 @@ from pydantic import BaseModel
 app = FastAPI(
     title="ChronoSheet API",
     description="The intelligent history layer for spreadsheets.",
-    version="0.2.0",
+    version="0.3.0",
 )
 
 # ============================================
@@ -55,9 +68,6 @@ app.add_middleware(
 # ============================================
 # In-memory snapshot storage (the "Raft log")
 # ============================================
-# Each entry in this list is one saved version of a spreadsheet.
-# Entries are append-only: we never modify or delete old ones.
-# This is exactly how Raft's log works.
 snapshots_log: list[dict[str, Any]] = []
 
 
@@ -66,14 +76,14 @@ snapshots_log: list[dict[str, Any]] = []
 # ============================================
 @app.get("/")
 def welcome():
-    """Friendly hello + snapshot count for visibility."""
     return {
         "name": "ChronoSheet API",
-        "version": "0.2.0",
+        "version": "0.3.0",
         "status": "alive",
         "message": "Welcome to ChronoSheet — Spreadsheets That Remember.",
         "docs": "Visit /docs to see all available endpoints.",
         "snapshots_stored": len(snapshots_log),
+        "ai_enabled": groq_client is not None,
     }
 
 
@@ -82,7 +92,11 @@ def welcome():
 # ============================================
 @app.get("/health")
 def health_check():
-    return {"status": "ok", "service": "chronosheet-backend"}
+    return {
+        "status": "ok",
+        "service": "chronosheet-backend",
+        "ai_enabled": groq_client is not None,
+    }
 
 
 # ============================================
@@ -91,8 +105,8 @@ def health_check():
 @app.get("/version")
 def get_version():
     return {
-        "version": "0.2.0",
-        "phase": "Phase 2 — Time Machine",
+        "version": "0.3.0",
+        "phase": "Phase 3 — AI Insights",
     }
 
 
@@ -122,10 +136,69 @@ async def upload_spreadsheet(file: UploadFile = File(...)):
     if sheet is None:
         raise HTTPException(status_code=400, detail="No active sheet found.")
 
-    rows = []
+    # Helper: turn dates and datetimes into clean, readable strings.
+    # If the time is midnight (00:00:00), we treat it as just a date.
+    def format_cell(value: Any) -> Any:
+        if value is None:
+            return ""
+        if isinstance(value, datetime):
+            # If the time portion is just midnight, output as date only
+            if value.hour == 0 and value.minute == 0 and value.second == 0:
+                return value.strftime("%Y-%m-%d")
+            return value.strftime("%Y-%m-%d %H:%M:%S")
+        if isinstance(value, date):
+            return value.strftime("%Y-%m-%d")
+        if isinstance(value, time):
+            return value.strftime("%H:%M:%S")
+        return value
+
+    # Read every row from the Excel sheet
+    all_rows: list[list[Any]] = []
     for row in sheet.iter_rows(values_only=True):
-        cleaned_row = [cell if cell is not None else "" for cell in row]
-        rows.append(cleaned_row)
+        cleaned_row = [format_cell(cell) for cell in row]
+        all_rows.append(cleaned_row)
+
+    # ------ Auto-skip empty rows at TOP and BOTTOM ------
+    # We only strip empty rows at the edges. Empty rows in the middle stay because
+    # they might be intentional separators or visual spacing.
+    def is_empty_row(row: list[Any]) -> bool:
+        """A row is empty when every cell is empty/whitespace-only."""
+        for cell in row:
+            if cell is not None and str(cell).strip() != "":
+                return False
+        return True
+
+    skipped_top = 0
+    while skipped_top < len(all_rows) and is_empty_row(all_rows[skipped_top]):
+        skipped_top += 1
+
+    skipped_bottom = 0
+    while (
+        skipped_bottom < len(all_rows) - skipped_top
+        and is_empty_row(all_rows[len(all_rows) - 1 - skipped_bottom])
+    ):
+        skipped_bottom += 1
+
+    end_index = len(all_rows) - skipped_bottom
+    rows = all_rows[skipped_top:end_index]
+
+    # Safety: if the file was completely empty, return one empty row so UI does not break
+    if not rows and all_rows:
+        rows = [["" for _ in range(len(all_rows[0]))]]
+    elif not rows:
+        rows = [[""]]
+
+    # Build a friendly skip message (only shows if something was skipped)
+    skip_notes: list[str] = []
+    if skipped_top > 0:
+        skip_notes.append(
+            f"Skipped {skipped_top} empty row{'s' if skipped_top > 1 else ''} at top"
+        )
+    if skipped_bottom > 0:
+        skip_notes.append(
+            f"Skipped {skipped_bottom} empty row{'s' if skipped_bottom > 1 else ''} at bottom"
+        )
+    skip_message = f" ({'. '.join(skip_notes)})" if skip_notes else ""
 
     return {
         "success": True,
@@ -134,55 +207,42 @@ async def upload_spreadsheet(file: UploadFile = File(...)):
         "row_count": len(rows),
         "column_count": len(rows[0]) if rows else 0,
         "data": rows,
-        "message": f"Successfully parsed {file.filename}. Found {len(rows)} rows.",
+        "skipped_top": skipped_top,
+        "skipped_bottom": skipped_bottom,
+        "message": (
+            f"Successfully parsed {file.filename}. Found {len(rows)} rows.{skip_message}"
+        ),
     }
 
 
 # ============================================
-# Snapshot data shape (Phase 2)
+# Snapshot endpoints (Phase 2 — Time Machine)
 # ============================================
 class SnapshotRequest(BaseModel):
-    """The shape of data the frontend sends when saving a snapshot."""
     filename: str
     sheet_name: str
     data: list[list[Any]]
     row_count: int
     column_count: int
     changes_from_previous: int = 0
-    note: str | None = None  # Optional user-written note about this version
+    note: str | None = None
 
 
-# ============================================
-# Save a snapshot — Phase 2 endpoint
-# ============================================
 @app.post("/save-snapshot")
 def save_snapshot(snapshot: SnapshotRequest):
-    """
-    Append a new snapshot to the Raft-style log.
-
-    Each call here is like a Raft log entry:
-    - Append-only (we never modify old entries)
-    - Has a unique ID
-    - Has a timestamp
-    - Preserves the full state at this moment in time
-
-    Returns the new snapshot ID and the total count of stored snapshots.
-    """
+    """Append a new snapshot to the Raft-style log."""
     new_snapshot = {
-        "id": str(uuid4()),                            # Unique fingerprint
+        "id": str(uuid4()),
         "filename": snapshot.filename,
         "sheet_name": snapshot.sheet_name,
-        "saved_at": datetime.now().isoformat(),        # Timestamp
-        "data": snapshot.data,                          # The full state
+        "saved_at": datetime.now().isoformat(),
+        "data": snapshot.data,
         "row_count": snapshot.row_count,
         "column_count": snapshot.column_count,
         "changes_from_previous": snapshot.changes_from_previous,
         "note": snapshot.note,
     }
-
-    # APPEND-ONLY — this is the heart of the Raft log concept
     snapshots_log.append(new_snapshot)
-
     return {
         "success": True,
         "snapshot_id": new_snapshot["id"],
@@ -195,18 +255,9 @@ def save_snapshot(snapshot: SnapshotRequest):
     }
 
 
-# ============================================
-# List all snapshots for a given filename
-# ============================================
 @app.get("/snapshots")
 def list_snapshots(filename: str | None = None):
-    """
-    Return summaries of all snapshots. If filename is given, only return
-    snapshots for that file. Order: oldest first (chronological).
-
-    We exclude the heavy "data" field from this list to keep it fast —
-    you only download the full data when picking a specific snapshot.
-    """
+    """List all snapshots, optionally filtered by filename."""
     if filename:
         matching = [s for s in snapshots_log if s["filename"] == filename]
     else:
@@ -225,7 +276,6 @@ def list_snapshots(filename: str | None = None):
         }
         for s in matching
     ]
-
     return {
         "count": len(summaries),
         "filename_filter": filename,
@@ -233,20 +283,134 @@ def list_snapshots(filename: str | None = None):
     }
 
 
-# ============================================
-# Get one full snapshot by its ID (time travel!)
-# ============================================
 @app.get("/snapshot/{snapshot_id}")
 def get_snapshot(snapshot_id: str):
-    """
-    Return the full data of one specific snapshot.
-    This is what the time-travel slider will call when the user
-    drags it to a past moment — "give me the spreadsheet as it was".
-    """
+    """Return the full data of one snapshot."""
     for snapshot in snapshots_log:
         if snapshot["id"] == snapshot_id:
             return snapshot
-    raise HTTPException(
-        status_code=404,
-        detail=f"Snapshot {snapshot_id} not found.",
-    )
+    raise HTTPException(status_code=404, detail=f"Snapshot {snapshot_id} not found.")
+
+
+# ============================================
+# AI Analysis endpoint (Phase 3 — Groq Insights)
+# ============================================
+class AnalyzeRequest(BaseModel):
+    """The shape of data the frontend sends when asking for AI analysis."""
+    filename: str
+    sheet_name: str
+    data: list[list[Any]]
+
+
+@app.post("/analyze-spreadsheet")
+def analyze_spreadsheet(request: AnalyzeRequest):
+    """
+    Use Groq (Llama 3.3 70B) to analyze the spreadsheet and return insights.
+
+    Returns:
+    - Summary of what the data is about
+    - Anomalies (outliers, unusual values)
+    - Patterns and trends
+    - Data quality issues
+    - Recommendations
+
+    Free, fast, and surprisingly insightful.
+    """
+    # Check that the AI is configured
+    if not groq_client:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Artificial Intelligence is not configured. "
+                "Add GROQ_API_KEY to backend/.env"
+            ),
+        )
+
+    # Limit the data we send to avoid hitting token limits.
+    # We will analyze the first 60 rows (usually enough for pattern detection).
+    SAMPLE_LIMIT = 60
+    sample = request.data[:SAMPLE_LIMIT]
+
+    # Build a text representation of the spreadsheet that the model can read
+    rows_text = []
+    for index, row in enumerate(sample):
+        row_str = " | ".join(str(cell) for cell in row)
+        rows_text.append(f"Row {index + 1}: {row_str}")
+    data_text = "\n".join(rows_text)
+
+    # The prompt we send to the AI
+    user_prompt = f"""You are an expert spreadsheet auditor and data analyst.
+
+Analyze this spreadsheet carefully and return your insights as a strict JSON object.
+
+File: {request.filename}
+Sheet: {request.sheet_name}
+Showing first {len(sample)} rows of {len(request.data)} total rows.
+
+Data:
+{data_text}
+
+Return your analysis in this exact JSON structure (no markdown, no extra text, just valid JSON):
+{{
+  "summary": "A one-sentence overview of what this spreadsheet appears to be about",
+  "anomalies": [
+    "Unusual values, outliers, or things that don't fit the pattern. Mention specific row numbers when possible."
+  ],
+  "patterns": [
+    "Notable trends, repeating values, or relationships between columns"
+  ],
+  "data_quality": [
+    "Issues like empty cells, inconsistent formats, duplicates, suspicious entries"
+  ],
+  "recommendations": [
+    "Concrete suggestions for the person who owns this data"
+  ]
+}}
+
+Rules:
+- Each list (anomalies, patterns, etc.) should have 2 to 5 items
+- Be concise but insightful
+- Be specific (mention row numbers, column names, actual values)
+- If a category has no findings, return an empty list for it
+"""
+
+    try:
+        response = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an expert spreadsheet auditor. "
+                        "You respond ONLY in valid JSON, never in markdown or prose."
+                    ),
+                },
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.3,  # Lower temperature for more consistent analysis
+            max_tokens=2048,
+        )
+
+        ai_text = response.choices[0].message.content or "{}"
+        analysis = json.loads(ai_text)
+
+        return {
+            "success": True,
+            "filename": request.filename,
+            "analyzed_rows": len(sample),
+            "total_rows": len(request.data),
+            "model": "llama-3.3-70b-versatile",
+            "analysis": analysis,
+        }
+
+    except json.JSONDecodeError as error:
+        raise HTTPException(
+            status_code=500,
+            detail=f"AI returned invalid JSON: {error}",
+        )
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail=f"AI analysis failed: {error}",
+        )

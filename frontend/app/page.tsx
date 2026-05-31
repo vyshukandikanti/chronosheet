@@ -240,6 +240,104 @@ function SpreadsheetView({
   // The most recent toast message to show (success or error)
   const [toast, setToast] = useState<{ kind: "success" | "error"; text: string } | null>(null);
 
+  // ------ AI Insights state (Phase 3: Groq analysis) ------
+  type AIAnalysis = {
+    summary: string;
+    anomalies: string[];
+    patterns: string[];
+    data_quality: string[];
+    recommendations: string[];
+  };
+  // Are we currently asking the AI for insights?
+  const [analyzingAI, setAnalyzingAI] = useState(false);
+  // The most recent AI analysis result
+  const [aiAnalysis, setAiAnalysis] = useState<AIAnalysis | null>(null);
+  // Is the AI insights panel open?
+  const [showAIPanel, setShowAIPanel] = useState(false);
+  // Was the analysis just copied to clipboard? (used for the "Copied!" feedback)
+  const [aiCopied, setAiCopied] = useState(false);
+
+  // ------ Wave 1: Excel-style features ------
+  // The most recently clicked cell — used as the "context" for insert/delete operations
+  const [lastActive, setLastActive] = useState<{ row: number; col: number } | null>(null);
+  // What the user typed in the search bar (live highlights matching cells)
+  const [searchQuery, setSearchQuery] = useState("");
+  // Which column is currently sorted (null = no sort, original order)
+  const [sortColumn, setSortColumn] = useState<number | null>(null);
+  // Direction of sort: "asc" (smallest first) or "desc" (largest first)
+  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
+  // Snapshot of the data BEFORE any sorting started.
+  // This lets us "unsort" and return to the original row order.
+  const [preSortOrder, setPreSortOrder] = useState<SheetMatrix | null>(null);
+  // Is the Statistics panel open?
+  const [showStats, setShowStats] = useState(false);
+  // How dates should be displayed throughout the table
+  type DateFormat = "iso" | "dmy" | "mdy" | "short" | "long";
+  const [dateFormat, setDateFormat] = useState<DateFormat>("iso");
+
+  // ------ Undo / Redo history (like Ctrl+Z in Excel) ------
+  // Each item in the stack is a snapshot of (editedData + modifiedCells)
+  type UndoSnapshot = {
+    data: SheetMatrix;
+    modified: Set<string>;
+  };
+  const [undoStack, setUndoStack] = useState<UndoSnapshot[]>([]);
+  const [redoStack, setRedoStack] = useState<UndoSnapshot[]>([]);
+  const MAX_HISTORY = 50;
+
+  // Save the CURRENT state to the undo stack before making a change.
+  // Always call this RIGHT BEFORE modifying editedData or modifiedCells.
+  const captureSnapshot = () => {
+    const snap: UndoSnapshot = {
+      data: editedData.map((row) => [...row]),
+      modified: new Set(modifiedCells),
+    };
+    setUndoStack((previous) => {
+      const next = [...previous, snap];
+      // Keep the history bounded so memory does not explode
+      if (next.length > MAX_HISTORY) {
+        next.shift();
+      }
+      return next;
+    });
+    // Whenever a NEW action happens, the future is gone — clear the redo stack
+    setRedoStack([]);
+  };
+
+  // Undo the most recent change
+  const performUndo = () => {
+    if (undoStack.length === 0) return;
+    const lastSnapshot = undoStack[undoStack.length - 1];
+    // Save current state to redo (so user can re-do this undo)
+    const currentSnapshot: UndoSnapshot = {
+      data: editedData.map((row) => [...row]),
+      modified: new Set(modifiedCells),
+    };
+    setRedoStack((previous) => [...previous, currentSnapshot]);
+    // Pop from undo and restore
+    setUndoStack((previous) => previous.slice(0, -1));
+    setEditedData(lastSnapshot.data);
+    setModifiedCells(lastSnapshot.modified);
+    setEditingCell(null);
+  };
+
+  // Redo a change that was just undone
+  const performRedo = () => {
+    if (redoStack.length === 0) return;
+    const futureSnapshot = redoStack[redoStack.length - 1];
+    const currentSnapshot: UndoSnapshot = {
+      data: editedData.map((row) => [...row]),
+      modified: new Set(modifiedCells),
+    };
+    setUndoStack((previous) => [...previous, currentSnapshot]);
+    setRedoStack((previous) => previous.slice(0, -1));
+    setEditedData(futureSnapshot.data);
+    setModifiedCells(futureSnapshot.modified);
+    setEditingCell(null);
+  };
+
+  // (Ctrl+Z / Ctrl+Y keyboard handler — moved below, after viewingSnapshotId is declared)
+
   // ------ Time travel state (Phase 2: viewing history) ------
   // The list of all snapshots for this file (summaries, fetched from backend)
   type SnapshotSummary = {
@@ -262,15 +360,60 @@ function SpreadsheetView({
   // Are we currently fetching a snapshot from the backend?
   const [loadingSnapshot, setLoadingSnapshot] = useState(false);
 
+  // ------ Keyboard shortcut handler for Ctrl+Z / Ctrl+Y ------
+  // Placed here, after viewingSnapshotId is declared, so it can safely reference it.
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      // Don't intercept if the user is typing in a text input
+      // (let browser handle in-input undo there)
+      const target = event.target as HTMLElement;
+      if (
+        target.tagName === "INPUT" ||
+        target.tagName === "TEXTAREA" ||
+        target.isContentEditable
+      ) {
+        return;
+      }
+
+      // Don't allow undo/redo when time-traveling (read-only mode)
+      if (viewingSnapshotId !== null) return;
+
+      const isUndo =
+        (event.ctrlKey || event.metaKey) && event.key === "z" && !event.shiftKey;
+      const isRedo =
+        ((event.ctrlKey || event.metaKey) && event.key === "y") ||
+        ((event.ctrlKey || event.metaKey) && event.key === "z" && event.shiftKey);
+
+      if (isUndo) {
+        event.preventDefault();
+        performUndo();
+      } else if (isRedo) {
+        event.preventDefault();
+        performRedo();
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [undoStack, redoStack, editedData, modifiedCells, viewingSnapshotId]);
+
   // ------ Editing handlers ------
   const startEditing = (row: number, col: number) => {
     setEditingCell({ row, col });
+    setLastActive({ row, col }); // Remember this position for toolbar operations
     setInputValue(String(editedData[row][col] ?? ""));
   };
 
   const saveEdit = () => {
     if (!editingCell) return;
     const { row, col } = editingCell;
+
+    // Only capture if the value actually changed (for undo history)
+    const previousCellValue = String(editedData[row][col] ?? "");
+    if (inputValue !== previousCellValue) {
+      captureSnapshot();
+    }
 
     // Save the new value into our mutable data
     setEditedData((previous) =>
@@ -321,6 +464,203 @@ function SpreadsheetView({
     setEditedData(data.data.map((row) => [...row]));
     setModifiedCells(new Set());
     setEditingCell(null);
+    setLastActive(null);
+  };
+
+  // ============================================
+  // Wave 1: Excel-style row and column operations
+  // ============================================
+
+  // Add a new empty row at the bottom of the spreadsheet
+  const addRowAtEnd = () => {
+    captureSnapshot();
+    const numCols = editedData[0]?.length ?? 1;
+    const emptyRow: CellValue[] = Array(numCols).fill("");
+    setEditedData((previous) => [...previous, emptyRow]);
+    setModifiedCells(new Set()); // Reset because indices may shift
+  };
+
+  // Insert a new empty row at a specific position (rest shifts down)
+  const insertRowAtPosition = (position: number) => {
+    captureSnapshot();
+    const numCols = editedData[0]?.length ?? 1;
+    const emptyRow: CellValue[] = Array(numCols).fill("");
+    setEditedData((previous) => {
+      const copy = [...previous];
+      copy.splice(position, 0, emptyRow);
+      return copy;
+    });
+    setModifiedCells(new Set());
+    setEditingCell(null);
+  };
+
+  // Delete a row at a specific position
+  const deleteRowAtPosition = (position: number) => {
+    if (editedData.length <= 1) return; // Don't delete the last row
+    captureSnapshot();
+    setEditedData((previous) => previous.filter((_, index) => index !== position));
+    setModifiedCells(new Set());
+    setEditingCell(null);
+    setLastActive(null);
+  };
+
+  // Add a new empty column to the right of the spreadsheet
+  const addColumnAtEnd = () => {
+    captureSnapshot();
+    setEditedData((previous) => previous.map((row) => [...row, ""]));
+    setModifiedCells(new Set());
+  };
+
+  // Insert a new empty column at a specific position
+  const insertColumnAtPosition = (position: number) => {
+    captureSnapshot();
+    setEditedData((previous) =>
+      previous.map((row) => {
+        const copy = [...row];
+        copy.splice(position, 0, "");
+        return copy;
+      })
+    );
+    setModifiedCells(new Set());
+    setEditingCell(null);
+  };
+
+  // Delete a column at a specific position
+  const deleteColumnAtPosition = (position: number) => {
+    const numCols = editedData[0]?.length ?? 0;
+    if (numCols <= 1) return; // Don't delete the last column
+    captureSnapshot();
+    setEditedData((previous) =>
+      previous.map((row) => row.filter((_, index) => index !== position))
+    );
+    setModifiedCells(new Set());
+    setEditingCell(null);
+    setLastActive(null);
+  };
+
+  // Helper: does this cell match the current search query?
+  const cellMatchesSearch = (cellValue: CellValue): boolean => {
+    if (!searchQuery.trim()) return false;
+    return String(cellValue ?? "")
+      .toLowerCase()
+      .includes(searchQuery.toLowerCase());
+  };
+
+  // ============================================
+  // Wave 1: Smart Cleanup — Remove ALL empty rows in one click
+  // ============================================
+  // An empty row is one where every cell is blank/whitespace.
+  // This includes empty rows in the middle (which auto-skip on upload preserves).
+  const smartCleanup = () => {
+    // Find empty rows (any row where every cell is blank)
+    const isEmptyRow = (row: CellValue[]): boolean => {
+      return row.every((cell) => {
+        if (cell === null || cell === undefined) return true;
+        return String(cell).trim() === "";
+      });
+    };
+
+    const emptyRowCount = editedData.filter(isEmptyRow).length;
+
+    if (emptyRowCount === 0) {
+      // Nothing to clean — give friendly feedback
+      setToast({
+        kind: "success",
+        text: "Spreadsheet is already clean — no empty rows found!",
+      });
+      setTimeout(() => setToast(null), 3000);
+      return;
+    }
+
+    // Save current state for undo BEFORE making the change
+    captureSnapshot();
+
+    // Keep only the non-empty rows
+    const cleaned = editedData.filter((row) => !isEmptyRow(row));
+
+    setEditedData(cleaned);
+    setModifiedCells(new Set()); // Reset because row indices shifted
+    setEditingCell(null);
+    setLastActive(null);
+
+    setToast({
+      kind: "success",
+      text: `Removed ${emptyRowCount} empty row${emptyRowCount > 1 ? "s" : ""}. Press Ctrl+Z to undo.`,
+    });
+    setTimeout(() => setToast(null), 4000);
+  };
+
+  // ============================================
+  // Wave 1: Sort by column — 3-state cycle (asc → desc → unsorted)
+  // ============================================
+  // Click 1: Sort ascending (smallest/A-Z first)
+  // Click 2: Sort descending (largest/Z-A first)
+  // Click 3: Unsort (return to the original row order before any sorting)
+  // Click on a different column: Sort that column ascending
+  const sortByColumn = (colIndex: number) => {
+    captureSnapshot();
+
+    // ----- CASE 1: Third click on same column → UNSORT (restore original order) -----
+    if (sortColumn === colIndex && sortDirection === "desc") {
+      if (preSortOrder) {
+        setEditedData(preSortOrder);
+        setPreSortOrder(null);
+      }
+      setSortColumn(null);
+      setSortDirection("asc");
+      setModifiedCells(new Set());
+      setEditingCell(null);
+      setLastActive(null);
+      return;
+    }
+
+    // ----- CASE 2: First sort starting from unsorted state → remember original order -----
+    if (sortColumn === null) {
+      // Save a deep copy so we can restore later
+      setPreSortOrder(editedData.map((row) => [...row]));
+    }
+
+    // Decide direction:
+    // - Same column currently asc → switch to desc
+    // - Otherwise (new column, or unsorted) → asc
+    let nextDirection: "asc" | "desc" = "asc";
+    if (sortColumn === colIndex && sortDirection === "asc") {
+      nextDirection = "desc";
+    }
+
+    // ----- Smart sorting that handles numbers and text -----
+    const sorted = [...editedData].sort((rowA, rowB) => {
+      const valueA = rowA[colIndex];
+      const valueB = rowB[colIndex];
+
+      // Empty values always go to the bottom
+      const isEmptyA = valueA === "" || valueA === null || valueA === undefined;
+      const isEmptyB = valueB === "" || valueB === null || valueB === undefined;
+      if (isEmptyA && isEmptyB) return 0;
+      if (isEmptyA) return 1;
+      if (isEmptyB) return -1;
+
+      // Try numeric comparison first
+      const numberA = parseFloat(String(valueA));
+      const numberB = parseFloat(String(valueB));
+      if (!isNaN(numberA) && !isNaN(numberB)) {
+        return nextDirection === "asc" ? numberA - numberB : numberB - numberA;
+      }
+
+      // Fall back to text comparison (case-insensitive)
+      const textA = String(valueA).toLowerCase();
+      const textB = String(valueB).toLowerCase();
+      if (textA < textB) return nextDirection === "asc" ? -1 : 1;
+      if (textA > textB) return nextDirection === "asc" ? 1 : -1;
+      return 0;
+    });
+
+    setEditedData(sorted);
+    setSortColumn(colIndex);
+    setSortDirection(nextDirection);
+    setModifiedCells(new Set()); // Reset because rows moved around
+    setEditingCell(null);
+    setLastActive(null);
   };
 
   // ------ Save snapshot to backend (Phase 2 — Time Machine) ------
@@ -427,6 +767,68 @@ function SpreadsheetView({
     setViewingSnapshotData(null);
   };
 
+  // ------ AI Analysis handler (Phase 3 — Groq) ------
+  // Sends the current spreadsheet data to the backend, which calls Groq AI
+  // and returns a structured analysis (anomalies, patterns, recommendations).
+  const handleAnalyzeWithAI = async () => {
+    setAnalyzingAI(true);
+    setToast(null);
+    setShowAIPanel(true);
+    setAiAnalysis(null);
+
+    try {
+      const response = await fetch(`${BACKEND_URL}/analyze-spreadsheet`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          filename: data.filename,
+          sheet_name: data.sheet_name,
+          data: viewingSnapshotData ?? editedData,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorBody = await response.json().catch(() => ({}));
+        const detail =
+          typeof errorBody?.detail === "string"
+            ? errorBody.detail
+            : "AI analysis failed.";
+        throw new Error(detail);
+      }
+
+      const result = await response.json();
+      setAiAnalysis(result.analysis);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Could not analyze with AI.";
+      setToast({ kind: "error", text: message });
+      setTimeout(() => setToast(null), 5000);
+      setShowAIPanel(false);
+    } finally {
+      setAnalyzingAI(false);
+    }
+  };
+
+  // ------ Copy AI Analysis to Clipboard ------
+  // Formats the AI insights as nicely-formatted plain text and copies
+  // them to the clipboard. The text is ready to paste into email, Slack,
+  // Notion, Word, or anywhere else.
+  const copyAIAnalysisToClipboard = async () => {
+    if (!aiAnalysis) return;
+
+    const text = formatAnalysisAsPlainText(aiAnalysis, data.filename);
+
+    try {
+      await navigator.clipboard.writeText(text);
+      setAiCopied(true);
+      // Reset the "Copied!" label back to "Copy" after 2 seconds
+      setTimeout(() => setAiCopied(false), 2000);
+    } catch {
+      setToast({ kind: "error", text: "Could not copy to clipboard." });
+      setTimeout(() => setToast(null), 3000);
+    }
+  };
+
   // ------ Render ------
   // Decide what data the table should show:
   // - If we are time-traveling → show the snapshot data
@@ -490,6 +892,26 @@ function SpreadsheetView({
                 </button>
               </>
             )}
+            {/* ANALYZE WITH AI BUTTON — opens insights panel */}
+            <button
+              onClick={handleAnalyzeWithAI}
+              disabled={analyzingAI}
+              className="group flex items-center gap-2 rounded-lg border border-purple-500/40 bg-gradient-to-r from-purple-500/15 to-emerald-500/10 px-4 py-2 text-sm font-semibold text-purple-200 transition-colors hover:from-purple-500/25 hover:to-emerald-500/15 hover:text-purple-100 disabled:cursor-not-allowed disabled:opacity-60"
+              title="Use AI to find anomalies, patterns, and insights in your spreadsheet"
+            >
+              {analyzingAI ? (
+                <>
+                  <span className="h-3 w-3 animate-spin rounded-full border-2 border-purple-300 border-t-transparent" />
+                  <span>Analyzing...</span>
+                </>
+              ) : (
+                <>
+                  <span>✨</span>
+                  <span>Analyze with AI</span>
+                </>
+              )}
+            </button>
+
             {/* HISTORY BUTTON — opens the time travel panel */}
             <button
               onClick={() => setShowHistory((open) => !open)}
@@ -562,25 +984,216 @@ function SpreadsheetView({
           </div>
         </div>
 
+        {/* EXCEL-STYLE TOOLBAR — Wave 1 */}
+        {!isReadOnly && (
+          <div className="mb-4 rounded-xl border border-slate-800 bg-slate-900 p-3">
+            <div className="flex flex-wrap items-center gap-2">
+
+              {/* Label */}
+              <span className="mr-2 text-xs font-bold uppercase tracking-wider text-slate-500">
+                Toolbar
+              </span>
+
+              {/* ----- UNDO / REDO ----- */}
+              <ToolbarButton
+                onClick={performUndo}
+                icon="↶"
+                label="Undo"
+                disabled={undoStack.length === 0}
+                title={
+                  undoStack.length > 0
+                    ? `Undo last change (Ctrl+Z) — ${undoStack.length} action${undoStack.length > 1 ? "s" : ""} available`
+                    : "Nothing to undo"
+                }
+              />
+              <ToolbarButton
+                onClick={performRedo}
+                icon="↷"
+                label="Redo"
+                disabled={redoStack.length === 0}
+                title={
+                  redoStack.length > 0
+                    ? `Redo undone change (Ctrl+Y) — ${redoStack.length} action${redoStack.length > 1 ? "s" : ""} available`
+                    : "Nothing to redo"
+                }
+              />
+
+              {/* Divider */}
+              <span className="mx-2 h-6 w-px bg-slate-700" />
+
+              {/* ----- ROW OPERATIONS ----- */}
+              <ToolbarButton
+                onClick={addRowAtEnd}
+                icon="➕"
+                label="Add Row"
+                title="Add a new empty row at the bottom"
+              />
+              <ToolbarButton
+                onClick={() => lastActive && insertRowAtPosition(lastActive.row)}
+                icon="⬆️"
+                label="Insert Row Above"
+                disabled={!lastActive}
+                title={lastActive ? `Insert row above row ${lastActive.row + 1}` : "Click a cell first"}
+              />
+              <ToolbarButton
+                onClick={() => lastActive && insertRowAtPosition(lastActive.row + 1)}
+                icon="⬇️"
+                label="Insert Row Below"
+                disabled={!lastActive}
+                title={lastActive ? `Insert row below row ${lastActive.row + 1}` : "Click a cell first"}
+              />
+              <ToolbarButton
+                onClick={() => lastActive && deleteRowAtPosition(lastActive.row)}
+                icon="❌"
+                label="Delete Row"
+                disabled={!lastActive}
+                danger
+                title={lastActive ? `Delete row ${lastActive.row + 1}` : "Click a cell first"}
+              />
+
+              {/* Divider */}
+              <span className="mx-2 h-6 w-px bg-slate-700" />
+
+              {/* ----- COLUMN OPERATIONS ----- */}
+              <ToolbarButton
+                onClick={addColumnAtEnd}
+                icon="➕"
+                label="Add Column"
+                title="Add a new empty column at the right"
+              />
+              <ToolbarButton
+                onClick={() => lastActive && insertColumnAtPosition(lastActive.col)}
+                icon="⬅️"
+                label="Insert Col Left"
+                disabled={!lastActive}
+                title={lastActive ? `Insert column left of column ${columnLetter(lastActive.col)}` : "Click a cell first"}
+              />
+              <ToolbarButton
+                onClick={() => lastActive && insertColumnAtPosition(lastActive.col + 1)}
+                icon="➡️"
+                label="Insert Col Right"
+                disabled={!lastActive}
+                title={lastActive ? `Insert column right of column ${columnLetter(lastActive.col)}` : "Click a cell first"}
+              />
+              <ToolbarButton
+                onClick={() => lastActive && deleteColumnAtPosition(lastActive.col)}
+                icon="❌"
+                label="Delete Column"
+                disabled={!lastActive}
+                danger
+                title={lastActive ? `Delete column ${columnLetter(lastActive.col)}` : "Click a cell first"}
+              />
+
+              {/* Divider */}
+              <span className="mx-2 h-6 w-px bg-slate-700" />
+
+              {/* ----- SEARCH BOX ----- */}
+              <div className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5">
+                <span className="text-slate-500">🔎</span>
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                  placeholder="Search cells..."
+                  className="w-40 bg-transparent text-sm text-slate-200 placeholder:text-slate-600 focus:outline-none"
+                />
+                {searchQuery && (
+                  <button
+                    onClick={() => setSearchQuery("")}
+                    className="text-xs text-slate-500 hover:text-slate-300"
+                    title="Clear search"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+
+              {/* Divider */}
+              <span className="mx-2 h-6 w-px bg-slate-700" />
+
+              {/* ----- SMART CLEANUP ----- */}
+              <ToolbarButton
+                onClick={smartCleanup}
+                icon="🧹"
+                label="Cleanup"
+                title="Remove ALL empty rows in one click (Ctrl+Z to undo)"
+              />
+
+              {/* ----- DATE FORMAT PICKER ----- */}
+              <div className="flex items-center gap-1.5 rounded-md border border-slate-700 bg-slate-950 px-2 py-1.5">
+                <span className="text-xs text-slate-500">📅</span>
+                <select
+                  value={dateFormat}
+                  onChange={(event) => setDateFormat(event.target.value as DateFormat)}
+                  className="bg-transparent text-xs font-medium text-slate-200 focus:outline-none"
+                  title="Choose how dates are displayed"
+                >
+                  <option value="iso">ISO (2026-01-20)</option>
+                  <option value="dmy">DD/MM/YYYY (20/01/2026)</option>
+                  <option value="mdy">MM/DD/YYYY (01/20/2026)</option>
+                  <option value="short">Short (20 Jan 2026)</option>
+                  <option value="long">Long (January 20, 2026)</option>
+                </select>
+              </div>
+
+              {/* ----- STATISTICS TOGGLE ----- */}
+              <ToolbarButton
+                onClick={() => setShowStats((open) => !open)}
+                icon="📊"
+                label={showStats ? "Hide Stats" : "Show Stats"}
+                title="Toggle the statistics panel (Sum, Average, Min, Max per column)"
+              />
+
+              {/* ----- ACTIVE POSITION INDICATOR ----- */}
+              {lastActive && (
+                <span className="ml-auto rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-300">
+                  Active: {columnLetter(lastActive.col)}{lastActive.row + 1}
+                </span>
+              )}
+
+            </div>
+          </div>
+        )}
+
         {/* THE EDITABLE SPREADSHEET TABLE */}
         <div className="overflow-hidden rounded-xl border border-slate-800 bg-slate-900">
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
 
-              {/* Column letter headers (like Excel: A, B, C, D ...) */}
+              {/* Column letter headers (like Excel: A, B, C, D ...) — click to sort */}
               <thead className="border-b border-slate-800 bg-slate-900/90">
                 <tr>
                   <th className="sticky left-0 z-10 w-12 bg-slate-900/95 px-3 py-3 text-center text-xs font-semibold text-slate-500">
                     #
                   </th>
-                  {Array.from({ length: columnCount }, (_, colIndex) => (
-                    <th
-                      key={colIndex}
-                      className="min-w-[120px] px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-400"
-                    >
-                      {columnLetter(colIndex)}
-                    </th>
-                  ))}
+                  {Array.from({ length: columnCount }, (_, colIndex) => {
+                    const isSorted = sortColumn === colIndex;
+                    const arrow = isSorted ? (sortDirection === "asc" ? " ▲" : " ▼") : "";
+                    // Helpful tooltip explains the 3-click cycle
+                    const tooltip = isReadOnly
+                      ? ""
+                      : isSorted && sortDirection === "asc"
+                        ? `Click again for descending ▼ on column ${columnLetter(colIndex)}`
+                        : isSorted && sortDirection === "desc"
+                          ? `Click again to restore original order (unsort)`
+                          : `Click to sort by column ${columnLetter(colIndex)} ascending ▲`;
+                    return (
+                      <th
+                        key={colIndex}
+                        onClick={() => !isReadOnly && sortByColumn(colIndex)}
+                        className={`min-w-[120px] px-4 py-3 text-left text-xs font-bold uppercase tracking-wider transition-colors ${
+                          isReadOnly
+                            ? "text-slate-400"
+                            : isSorted
+                              ? "cursor-pointer bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/15"
+                              : "cursor-pointer text-slate-400 hover:bg-slate-800/50 hover:text-emerald-300"
+                        }`}
+                        title={tooltip}
+                      >
+                        {columnLetter(colIndex)}{arrow}
+                      </th>
+                    );
+                  })}
                 </tr>
               </thead>
 
@@ -602,6 +1215,12 @@ function SpreadsheetView({
                         editingCell?.row === rowIndex &&
                         editingCell?.col === colIndex;
                       const isModified = !isReadOnly && modifiedCells.has(cellKey);
+                      const isSearchMatch = cellMatchesSearch(cellValue);
+                      const isActiveCell =
+                        !isReadOnly &&
+                        lastActive?.row === rowIndex &&
+                        lastActive?.col === colIndex &&
+                        !isEditing;
 
                       return (
                         <td
@@ -610,9 +1229,13 @@ function SpreadsheetView({
                           className={`min-w-[120px] px-4 py-3 transition-colors ${
                             isReadOnly
                               ? "cursor-default text-purple-100/90"
-                              : isModified
-                                ? "cursor-text bg-emerald-500/10 text-emerald-200 ring-1 ring-inset ring-emerald-500/40"
-                                : "cursor-text text-slate-300 hover:bg-slate-800/40"
+                              : isSearchMatch
+                                ? "cursor-text bg-yellow-500/20 text-yellow-100 ring-1 ring-inset ring-yellow-500/50"
+                                : isModified
+                                  ? "cursor-text bg-emerald-500/10 text-emerald-200 ring-1 ring-inset ring-emerald-500/40"
+                                  : isActiveCell
+                                    ? "cursor-text bg-slate-800/60 text-slate-100 ring-1 ring-inset ring-slate-500/50"
+                                    : "cursor-text text-slate-300 hover:bg-slate-800/40"
                           }`}
                         >
                           {isEditing ? (
@@ -627,7 +1250,7 @@ function SpreadsheetView({
                             />
                           ) : (
                             <span className="block truncate">
-                              {String(cellValue ?? "")}
+                              {formatCellForDisplay(cellValue, dateFormat)}
                             </span>
                           )}
                         </td>
@@ -642,6 +1265,61 @@ function SpreadsheetView({
           </div>
         </div>
 
+        {/* STATISTICS PANEL — Wave 1 */}
+        {showStats && (
+          <div className="mt-6 rounded-xl border border-slate-800 bg-slate-900 p-5">
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="flex items-center gap-2 text-sm font-bold uppercase tracking-wider text-slate-400">
+                <span>📊</span>
+                <span>Column Statistics</span>
+              </h3>
+              <span className="text-xs text-slate-500">
+                Based on all {displayedData.length} rows
+              </span>
+            </div>
+
+            <div className="overflow-x-auto">
+              <div className="flex gap-3">
+                {Array.from({ length: columnCount }, (_, colIndex) => {
+                  const stats = computeColumnStats(displayedData, colIndex);
+                  return (
+                    <div
+                      key={colIndex}
+                      className="min-w-[180px] flex-shrink-0 rounded-lg border border-slate-800 bg-slate-950 p-3"
+                    >
+                      <div className="mb-2 flex items-center justify-between">
+                        <span className="text-xs font-bold text-emerald-400">
+                          Column {columnLetter(colIndex)}
+                        </span>
+                        <span className="text-[10px] uppercase text-slate-600">
+                          {stats.numeric ? "Numeric" : "Text"}
+                        </span>
+                      </div>
+                      <div className="space-y-1 text-xs">
+                        <StatRow label="Filled" value={stats.count} />
+                        {stats.empty > 0 && (
+                          <StatRow label="Empty" value={stats.empty} warning />
+                        )}
+                        {stats.numeric && (
+                          <>
+                            <StatRow label="Sum" value={formatNumber(stats.sum)} />
+                            <StatRow label="Average" value={formatNumber(stats.avg)} />
+                            <StatRow label="Min" value={formatNumber(stats.min)} />
+                            <StatRow label="Max" value={formatNumber(stats.max)} />
+                          </>
+                        )}
+                        {!stats.numeric && stats.uniqueCount !== undefined && (
+                          <StatRow label="Unique" value={stats.uniqueCount} />
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* HELP FOOTER */}
         <p className="mt-6 text-center text-sm text-slate-500">
           {isReadOnly
@@ -652,6 +1330,165 @@ function SpreadsheetView({
         </p>
 
       </main>
+
+      {/* AI INSIGHTS PANEL — appears when showAIPanel is true */}
+      {showAIPanel && (
+        <>
+          <div
+            className="fixed inset-0 z-40 bg-slate-950/70 backdrop-blur-sm"
+            onClick={() => !analyzingAI && setShowAIPanel(false)}
+          />
+
+          <aside className="fixed left-1/2 top-1/2 z-50 flex max-h-[85vh] w-full max-w-2xl -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-purple-500/30 bg-slate-950 shadow-2xl">
+
+            {/* Panel header */}
+            <div className="flex items-center justify-between border-b border-slate-800 bg-gradient-to-r from-purple-500/10 to-emerald-500/10 px-6 py-4">
+              <div className="flex items-center gap-3">
+                <span className="text-2xl">✨</span>
+                <div>
+                  <h2 className="text-lg font-bold tracking-tight">AI Insights</h2>
+                  <p className="text-xs text-slate-400">
+                    Powered by Llama 3.3 70B via Groq
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                {/* Copy button — only shown when there are insights to copy */}
+                {aiAnalysis && !analyzingAI && (
+                  <button
+                    onClick={copyAIAnalysisToClipboard}
+                    className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold transition-all ${
+                      aiCopied
+                        ? "border-emerald-500/50 bg-emerald-500/15 text-emerald-300"
+                        : "border-slate-700 bg-slate-900 text-slate-300 hover:border-purple-500/40 hover:text-purple-200"
+                    }`}
+                    title="Copy the entire analysis as plain text"
+                  >
+                    {aiCopied ? (
+                      <>
+                        <span>✓</span>
+                        <span>Copied!</span>
+                      </>
+                    ) : (
+                      <>
+                        <span>📋</span>
+                        <span>Copy</span>
+                      </>
+                    )}
+                  </button>
+                )}
+
+                <button
+                  onClick={() => !analyzingAI && setShowAIPanel(false)}
+                  disabled={analyzingAI}
+                  className="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-slate-200 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            {/* Panel body */}
+            <div className="flex-1 overflow-y-auto px-6 py-5">
+              {analyzingAI ? (
+                <div className="flex flex-col items-center justify-center gap-4 py-12">
+                  <div className="relative">
+                    <span className="block h-16 w-16 animate-spin rounded-full border-4 border-purple-500/30 border-t-purple-400" />
+                    <span className="absolute inset-0 flex items-center justify-center text-2xl">✨</span>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-lg font-semibold text-purple-200">
+                      AI is reading your spreadsheet...
+                    </p>
+                    <p className="mt-1 text-sm text-slate-400">
+                      Llama 3.3 70B is finding anomalies, patterns, and insights.
+                    </p>
+                    <p className="mt-3 text-xs text-slate-500">
+                      Usually takes 3 to 8 seconds.
+                    </p>
+                  </div>
+                </div>
+              ) : aiAnalysis ? (
+                <div className="space-y-5">
+
+                  {/* SUMMARY */}
+                  {aiAnalysis.summary && (
+                    <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4">
+                      <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-emerald-300">
+                        📋 Summary
+                      </h3>
+                      <p className="text-sm leading-relaxed text-slate-200">
+                        {aiAnalysis.summary}
+                      </p>
+                    </div>
+                  )}
+
+                  {/* ANOMALIES */}
+                  {aiAnalysis.anomalies && aiAnalysis.anomalies.length > 0 && (
+                    <InsightSection
+                      icon="🚨"
+                      title="Anomalies"
+                      color="red"
+                      items={aiAnalysis.anomalies}
+                    />
+                  )}
+
+                  {/* PATTERNS */}
+                  {aiAnalysis.patterns && aiAnalysis.patterns.length > 0 && (
+                    <InsightSection
+                      icon="🔍"
+                      title="Patterns"
+                      color="purple"
+                      items={aiAnalysis.patterns}
+                    />
+                  )}
+
+                  {/* DATA QUALITY */}
+                  {aiAnalysis.data_quality && aiAnalysis.data_quality.length > 0 && (
+                    <InsightSection
+                      icon="⚠️"
+                      title="Data Quality"
+                      color="amber"
+                      items={aiAnalysis.data_quality}
+                    />
+                  )}
+
+                  {/* RECOMMENDATIONS */}
+                  {aiAnalysis.recommendations && aiAnalysis.recommendations.length > 0 && (
+                    <InsightSection
+                      icon="💡"
+                      title="Recommendations"
+                      color="cyan"
+                      items={aiAnalysis.recommendations}
+                    />
+                  )}
+
+                  {/* Re-analyze button */}
+                  <div className="pt-2 text-center">
+                    <button
+                      onClick={handleAnalyzeWithAI}
+                      className="rounded-lg border border-purple-500/40 bg-purple-500/10 px-4 py-2 text-sm font-medium text-purple-200 hover:bg-purple-500/20"
+                    >
+                      ✨ Analyze again
+                    </button>
+                  </div>
+
+                </div>
+              ) : (
+                <div className="py-12 text-center text-sm text-slate-500">
+                  No analysis yet. Click &quot;Analyze with AI&quot; to start.
+                </div>
+              )}
+            </div>
+
+            {/* Panel footer */}
+            <div className="border-t border-slate-800 bg-slate-900/50 px-6 py-3 text-center text-xs text-slate-500">
+              AI can make mistakes. Always verify important findings yourself.
+            </div>
+
+          </aside>
+        </>
+      )}
 
       {/* HISTORY SIDE PANEL — slides in from the right when showHistory is true */}
       {showHistory && (
@@ -771,6 +1608,324 @@ function SpreadsheetView({
       )}
     </div>
   );
+}
+
+// ============================================
+// FORMAT CELL FOR DISPLAY
+// Detects date strings (like "2026-01-20") and re-formats them based on
+// the user's preferred format. Non-date values are returned as-is.
+// ============================================
+type DateFormatChoice = "iso" | "dmy" | "mdy" | "short" | "long";
+
+// Regex that matches "YYYY-MM-DD" optionally followed by " HH:MM:SS"
+const DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})(?:\s+(\d{2}):(\d{2}):(\d{2}))?$/;
+const SHORT_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const LONG_MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+function formatCellForDisplay(
+  cellValue: string | number | boolean | null,
+  format: DateFormatChoice
+): string {
+  if (cellValue === null || cellValue === undefined) return "";
+  const text = String(cellValue);
+
+  // Try to parse it as a date
+  const match = text.match(DATE_PATTERN);
+  if (!match) return text; // Not a date — return original text
+
+  const year = match[1];
+  const month = match[2];
+  const day = match[3];
+  const hasTime = match[4] !== undefined;
+  const timePart = hasTime ? ` ${match[4]}:${match[5]}` : "";
+
+  const monthIndex = parseInt(month, 10) - 1;
+
+  switch (format) {
+    case "iso":
+      return `${year}-${month}-${day}${timePart}`;
+    case "dmy":
+      return `${day}/${month}/${year}${timePart}`;
+    case "mdy":
+      return `${month}/${day}/${year}${timePart}`;
+    case "short":
+      return `${parseInt(day, 10)} ${SHORT_MONTHS[monthIndex]} ${year}${timePart}`;
+    case "long":
+      return `${LONG_MONTHS[monthIndex]} ${parseInt(day, 10)}, ${year}${timePart}`;
+    default:
+      return text;
+  }
+}
+
+// ============================================
+// COLUMN STATISTICS — Computes Sum, Avg, Min, Max for a column
+// ============================================
+type ColumnStats = {
+  count: number;       // Cells that have a value
+  empty: number;       // Cells that are empty
+  numeric: boolean;    // Are most cells numbers?
+  sum: number;
+  avg: number;
+  min: number;
+  max: number;
+  uniqueCount?: number; // For text columns: how many unique values
+};
+
+function computeColumnStats(data: (string | number | boolean | null)[][], colIndex: number): ColumnStats {
+  // Collect all non-empty values from this column
+  const values = data
+    .map((row) => row[colIndex])
+    .filter((value) => value !== "" && value !== null && value !== undefined);
+
+  // Try to convert each value to a number
+  const numbers = values
+    .map((value) => parseFloat(String(value)))
+    .filter((n) => !isNaN(n) && isFinite(n));
+
+  // If most of the filled values are numbers, treat as numeric column
+  const isNumeric = numbers.length > 0 && numbers.length >= values.length * 0.7;
+
+  const stats: ColumnStats = {
+    count: values.length,
+    empty: data.length - values.length,
+    numeric: isNumeric,
+    sum: 0,
+    avg: 0,
+    min: 0,
+    max: 0,
+  };
+
+  if (isNumeric && numbers.length > 0) {
+    stats.sum = numbers.reduce((a, b) => a + b, 0);
+    stats.avg = stats.sum / numbers.length;
+    stats.min = Math.min(...numbers);
+    stats.max = Math.max(...numbers);
+  } else {
+    // Text column — count unique values
+    const unique = new Set(values.map((v) => String(v).toLowerCase().trim()));
+    stats.uniqueCount = unique.size;
+  }
+
+  return stats;
+}
+
+// Format a number nicely (rounds to 2 decimals, adds thousands separators)
+function formatNumber(value: number): string {
+  if (!isFinite(value)) return "—";
+  // For whole numbers, don't show decimals
+  if (Number.isInteger(value)) {
+    return value.toLocaleString("en-US");
+  }
+  // For decimals, show up to 2 places
+  return value.toLocaleString("en-US", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  });
+}
+
+// ============================================
+// STAT ROW — A single label-value pair inside a column stats card
+// ============================================
+function StatRow({
+  label,
+  value,
+  warning,
+}: {
+  label: string;
+  value: string | number;
+  warning?: boolean;
+}) {
+  return (
+    <div className="flex items-center justify-between">
+      <span className="text-slate-500">{label}:</span>
+      <span className={`font-semibold ${warning ? "text-amber-400" : "text-slate-200"}`}>
+        {value}
+      </span>
+    </div>
+  );
+}
+
+// ============================================
+// TOOLBAR BUTTON — A single button in the Excel-style toolbar
+// ============================================
+function ToolbarButton({
+  onClick,
+  icon,
+  label,
+  disabled,
+  danger,
+  title,
+}: {
+  onClick: () => void;
+  icon: string;
+  label: string;
+  disabled?: boolean;
+  danger?: boolean;
+  title?: string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+        danger
+          ? "border-red-500/30 bg-red-500/5 text-red-300 hover:border-red-500/50 hover:bg-red-500/15"
+          : "border-slate-700 bg-slate-950 text-slate-300 hover:border-emerald-500/40 hover:bg-emerald-500/10 hover:text-emerald-200"
+      }`}
+    >
+      <span>{icon}</span>
+      <span className="hidden sm:inline">{label}</span>
+    </button>
+  );
+}
+
+// ============================================
+// INSIGHT SECTION — One color-coded category in the AI panel
+// Used for Anomalies, Patterns, Data Quality, Recommendations
+// ============================================
+function InsightSection({
+  icon,
+  title,
+  color,
+  items,
+}: {
+  icon: string;
+  title: string;
+  color: "red" | "purple" | "amber" | "cyan";
+  items: string[];
+}) {
+  const colorClasses = {
+    red: {
+      border: "border-red-500/30",
+      bg: "bg-red-500/10",
+      heading: "text-red-300",
+      bullet: "text-red-400",
+    },
+    purple: {
+      border: "border-purple-500/30",
+      bg: "bg-purple-500/10",
+      heading: "text-purple-300",
+      bullet: "text-purple-400",
+    },
+    amber: {
+      border: "border-amber-500/30",
+      bg: "bg-amber-500/10",
+      heading: "text-amber-300",
+      bullet: "text-amber-400",
+    },
+    cyan: {
+      border: "border-cyan-500/30",
+      bg: "bg-cyan-500/10",
+      heading: "text-cyan-300",
+      bullet: "text-cyan-400",
+    },
+  };
+  const c = colorClasses[color];
+
+  return (
+    <div className={`rounded-xl border ${c.border} ${c.bg} p-4`}>
+      <h3 className={`mb-3 flex items-center gap-2 text-xs font-bold uppercase tracking-wider ${c.heading}`}>
+        <span className="text-base">{icon}</span>
+        <span>{title}</span>
+        <span className="ml-auto rounded-full bg-slate-900/50 px-2 py-0.5 text-[10px] text-slate-400">
+          {items.length}
+        </span>
+      </h3>
+      <ul className="space-y-2">
+        {items.map((item, index) => (
+          <li key={index} className="flex gap-2 text-sm leading-relaxed text-slate-200">
+            <span className={`mt-1 ${c.bullet}`}>●</span>
+            <span>{item}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+// ============================================
+// FORMAT AI ANALYSIS AS PLAIN TEXT
+// Turns the structured AI analysis into a clean, paste-able text block.
+// Output looks great in emails, Slack, Notion, Word — anywhere.
+// ============================================
+type AIAnalysisForExport = {
+  summary: string;
+  anomalies: string[];
+  patterns: string[];
+  data_quality: string[];
+  recommendations: string[];
+};
+
+function formatAnalysisAsPlainText(
+  analysis: AIAnalysisForExport,
+  filename: string
+): string {
+  const lines: string[] = [];
+
+  // Header block
+  lines.push("══════════════════════════════════════════════");
+  lines.push("       ChronoSheet AI Analysis");
+  lines.push("══════════════════════════════════════════════");
+  lines.push(`File: ${filename}`);
+  lines.push(`Generated: ${new Date().toLocaleString()}`);
+  lines.push("");
+
+  // Summary
+  if (analysis.summary) {
+    lines.push("📋 SUMMARY");
+    lines.push("──────────────────────");
+    lines.push(analysis.summary);
+    lines.push("");
+  }
+
+  // Anomalies
+  if (analysis.anomalies && analysis.anomalies.length > 0) {
+    lines.push("🚨 ANOMALIES");
+    lines.push("──────────────────────");
+    analysis.anomalies.forEach((item, index) => {
+      lines.push(`  ${index + 1}. ${item}`);
+    });
+    lines.push("");
+  }
+
+  // Patterns
+  if (analysis.patterns && analysis.patterns.length > 0) {
+    lines.push("🔍 PATTERNS");
+    lines.push("──────────────────────");
+    analysis.patterns.forEach((item, index) => {
+      lines.push(`  ${index + 1}. ${item}`);
+    });
+    lines.push("");
+  }
+
+  // Data Quality
+  if (analysis.data_quality && analysis.data_quality.length > 0) {
+    lines.push("⚠️ DATA QUALITY");
+    lines.push("──────────────────────");
+    analysis.data_quality.forEach((item, index) => {
+      lines.push(`  ${index + 1}. ${item}`);
+    });
+    lines.push("");
+  }
+
+  // Recommendations
+  if (analysis.recommendations && analysis.recommendations.length > 0) {
+    lines.push("💡 RECOMMENDATIONS");
+    lines.push("──────────────────────");
+    analysis.recommendations.forEach((item, index) => {
+      lines.push(`  ${index + 1}. ${item}`);
+    });
+    lines.push("");
+  }
+
+  // Footer
+  lines.push("══════════════════════════════════════════════");
+  lines.push("Generated by ChronoSheet");
+  lines.push("Spreadsheets That Remember.");
+  lines.push("══════════════════════════════════════════════");
+
+  return lines.join("\n");
 }
 
 // ============================================

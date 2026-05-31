@@ -7,11 +7,13 @@ fastapi
 uvicorn[standard]
 
 # Spreadsheet handling
-openpyxl                  # Reading and writing .xlsx Excel files
-python-multipart          # Handling file uploads in FastAPI
+openpyxl
+python-multipart
 
-# Future additions (we will install these in upcoming phases):
-# pandas                  # For working with spreadsheet data at scale
-# google-generativeai     # For talking to Google Gemini AI
-# supabase                # For connecting to the database
+# Artificial Intelligence + environment variables
+groq                      # Groq AI - free, fast Llama 3.3 70B access
+python-dotenv             # Loads .env file at startup
+
+# Future additions:
+# supabase                # For persistent snapshot storage
 # pysyncobj               # For the Raft consensus layer
