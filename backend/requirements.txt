@@ -1,0 +1,17 @@
+# ChronoSheet Backend — Python Dependencies
+# To install everything in this list, run:
+#   .\venv\Scripts\python.exe -m pip install -r requirements.txt
+
+# Core web framework
+fastapi
+uvicorn[standard]
+
+# Spreadsheet handling
+openpyxl                  # Reading and writing .xlsx Excel files
+python-multipart          # Handling file uploads in FastAPI
+
+# Future additions (we will install these in upcoming phases):
+# pandas                  # For working with spreadsheet data at scale
+# google-generativeai     # For talking to Google Gemini AI
+# supabase                # For connecting to the database
+# pysyncobj               # For the Raft consensus layer
