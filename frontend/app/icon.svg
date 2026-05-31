@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!-- Emerald rounded square background -->
+  <rect width="32" height="32" rx="6" fill="#10b981"/>
+
+  <!-- Timeline circle outline -->
+  <circle cx="16" cy="16" r="11" stroke="#020617" stroke-width="2" fill="none"/>
+
+  <!-- Subtle spreadsheet grid inside the circle -->
+  <g stroke="#020617" stroke-width="1" opacity="0.55" stroke-linecap="round">
+    <!-- Vertical lines -->
+    <line x1="11" y1="11" x2="11" y2="21"/>
+    <line x1="16" y1="11" x2="16" y2="21"/>
+    <line x1="21" y1="11" x2="21" y2="21"/>
+    <!-- Horizontal lines -->
+    <line x1="11" y1="11" x2="21" y2="11"/>
+    <line x1="11" y1="16" x2="21" y2="16"/>
+    <line x1="11" y1="21" x2="21" y2="21"/>
+  </g>
+
+  <!-- Position dot on top of the timeline -->
+  <circle cx="16" cy="5" r="2" fill="#020617"/>
+</svg>
