@@ -8,7 +8,7 @@
 
 "use client";
 
-import { ChangeEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
+import { ChangeEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import BackendStatus from "./components/BackendStatus";
 
@@ -45,6 +45,61 @@ export default function Home() {
   const [uploading, setUploading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // ===== USER IDENTITY (persists in browser) =====
+  // Who is editing? Stored in localStorage so it persists across visits.
+  const [userName, setUserName] = useState<string>("");
+  // Is the "Welcome — what's your name?" modal showing?
+  const [showNameModal, setShowNameModal] = useState(false);
+  // The text the user is typing in the name modal
+  const [nameInput, setNameInput] = useState("");
+
+  // ===== THEME (Dark / Light mode) =====
+  type Theme = "dark" | "light";
+  const [theme, setTheme] = useState<Theme>("dark");
+
+  // Load theme from localStorage on first render
+  useEffect(() => {
+    const stored = localStorage.getItem("chronosheet-theme") as Theme | null;
+    if (stored === "light" || stored === "dark") {
+      setTheme(stored);
+    }
+  }, []);
+
+  // Apply theme class to the document root whenever theme changes
+  useEffect(() => {
+    const root = document.documentElement;
+    root.classList.remove("theme-light", "theme-dark");
+    root.classList.add(theme === "light" ? "theme-light" : "theme-dark");
+  }, [theme]);
+
+  // Toggle handler
+  const toggleTheme = () => {
+    const next: Theme = theme === "dark" ? "light" : "dark";
+    setTheme(next);
+    localStorage.setItem("chronosheet-theme", next);
+  };
+
+  // On first load: try to read name from localStorage.
+  // If empty, show the name prompt modal.
+  useEffect(() => {
+    const stored = localStorage.getItem("chronosheet-user-name");
+    if (stored && stored.trim() !== "") {
+      setUserName(stored);
+    } else {
+      setShowNameModal(true);
+    }
+  }, []);
+
+  // Save the name to state AND localStorage so it persists forever
+  const saveUserName = (name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    setUserName(trimmed);
+    localStorage.setItem("chronosheet-user-name", trimmed);
+    setShowNameModal(false);
+    setNameInput("");
+  };
 
   // ===== HANDLERS =====
   const handleUploadClick = () => {
@@ -99,7 +154,19 @@ export default function Home() {
 
   // ===== RENDER =====
   if (spreadsheet) {
-    return <SpreadsheetView data={spreadsheet} onReset={handleReset} />;
+    return (
+      <SpreadsheetView
+        data={spreadsheet}
+        onReset={handleReset}
+        userName={userName}
+        onChangeName={() => {
+          setNameInput(userName);
+          setShowNameModal(true);
+        }}
+        theme={theme}
+        onToggleTheme={toggleTheme}
+      />
+    );
   }
 
   return (
@@ -119,6 +186,13 @@ export default function Home() {
         <Brand />
         <div className="flex items-center gap-5">
           <BackendStatus />
+          <button
+            onClick={toggleTheme}
+            className="rounded-full border border-slate-700 bg-slate-900 p-2 text-slate-300 hover:border-emerald-500/40 hover:text-emerald-300"
+            title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+          >
+            {theme === "dark" ? "☀️" : "🌙"}
+          </button>
           <span className="text-sm font-medium text-slate-500">v0.1 — Day Zero</span>
         </div>
       </header>
@@ -204,6 +278,74 @@ export default function Home() {
         Excel forgets. ChronoSheet remembers.
       </footer>
 
+      {/* NAME PROMPT MODAL — appears on first visit (or when changing name) */}
+      {showNameModal && (
+        <>
+          <div className="fixed inset-0 z-40 bg-slate-950/80 backdrop-blur-sm" />
+          <div className="fixed left-1/2 top-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-emerald-500/30 bg-slate-950 shadow-2xl">
+            <div className="border-b border-slate-800 bg-gradient-to-r from-emerald-500/10 to-purple-500/10 px-6 py-4">
+              <div className="flex items-center gap-3">
+                <span className="text-3xl">👋</span>
+                <div>
+                  <h2 className="text-lg font-bold tracking-tight">
+                    {userName ? "Change your name" : "Welcome to ChronoSheet!"}
+                  </h2>
+                  <p className="text-xs text-slate-400">
+                    {userName
+                      ? "Update the name attached to your snapshots"
+                      : "Tell us who's editing so we can track who saved what"}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="px-6 py-5">
+              <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-400">
+                Your name
+              </label>
+              <input
+                type="text"
+                value={nameInput}
+                onChange={(event) => setNameInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && nameInput.trim()) {
+                    saveUserName(nameInput);
+                  }
+                }}
+                placeholder="e.g., Priya, Ravi, or your team name"
+                autoFocus
+                maxLength={50}
+                className="w-full rounded-lg border border-slate-700 bg-slate-900 px-4 py-3 text-sm text-slate-100 placeholder:text-slate-600 focus:border-emerald-500/50 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
+              />
+              <p className="mt-2 text-xs text-slate-500">
+                Saved in your browser only. You can change it anytime.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 border-t border-slate-800 bg-slate-900/50 px-6 py-3">
+              {userName && (
+                <button
+                  onClick={() => {
+                    setShowNameModal(false);
+                    setNameInput("");
+                  }}
+                  className="rounded-lg border border-slate-700 bg-slate-900 px-4 py-2 text-sm font-medium text-slate-300 hover:bg-slate-800"
+                >
+                  Cancel
+                </button>
+              )}
+              <button
+                onClick={() => saveUserName(nameInput)}
+                disabled={!nameInput.trim()}
+                className="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Continue →
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+
     </div>
   );
 }
@@ -214,9 +356,17 @@ export default function Home() {
 function SpreadsheetView({
   data,
   onReset,
+  userName,
+  onChangeName,
+  theme,
+  onToggleTheme,
 }: {
   data: SpreadsheetData;
   onReset: () => void;
+  userName: string;
+  onChangeName: () => void;
+  theme: "dark" | "light";
+  onToggleTheme: () => void;
 }) {
   // A mutable copy of the data that the user can edit
   const [editedData, setEditedData] = useState<SheetMatrix>(() =>
@@ -256,6 +406,34 @@ function SpreadsheetView({
   const [showAIPanel, setShowAIPanel] = useState(false);
   // Was the analysis just copied to clipboard? (used for the "Copied!" feedback)
   const [aiCopied, setAiCopied] = useState(false);
+
+  // ------ Wave 2: Save Snapshot Modal (with optional note) ------
+  // Is the "Save Snapshot" modal open?
+  const [showSaveModal, setShowSaveModal] = useState(false);
+  // The note the user types in the modal
+  const [snapshotNote, setSnapshotNote] = useState("");
+
+  // ------ Wave 2: Export to Excel state ------
+  const [exporting, setExporting] = useState(false);
+
+  // ------ Wave 2: AI Compare state ------
+  type CompareAnalysis = {
+    summary: string;
+    key_changes: string[];
+    patterns: string[];
+    impact: string[];
+  };
+  type CompareResult = {
+    total_changes: number;
+    structural_change: boolean;
+    past_label: string;
+    current_label: string;
+    diffs_sample: { cell: string; past: string; current: string }[];
+    analysis: CompareAnalysis;
+  };
+  const [comparing, setComparing] = useState(false);
+  const [compareResult, setCompareResult] = useState<CompareResult | null>(null);
+  const [showCompareModal, setShowCompareModal] = useState(false);
 
   // ------ Wave 1: Excel-style features ------
   // The most recently clicked cell — used as the "context" for insert/delete operations
@@ -349,6 +527,7 @@ function SpreadsheetView({
     column_count: number;
     changes_from_previous: number;
     note: string | null;
+    author?: string;
   };
   const [snapshotsList, setSnapshotsList] = useState<SnapshotSummary[]>([]);
   // Is the history panel open?
@@ -359,6 +538,71 @@ function SpreadsheetView({
   const [viewingSnapshotData, setViewingSnapshotData] = useState<SheetMatrix | null>(null);
   // Are we currently fetching a snapshot from the backend?
   const [loadingSnapshot, setLoadingSnapshot] = useState(false);
+
+  // ------ Arrow key navigation (like Excel) ------
+  // Press ↑ ↓ ← → to move the active cell.
+  // Press Enter to start editing the active cell.
+  useEffect(() => {
+    const handleArrowKeys = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement;
+      // Skip when typing in any input — arrows there should move the text cursor
+      if (
+        target.tagName === "INPUT" ||
+        target.tagName === "TEXTAREA" ||
+        target.isContentEditable
+      ) {
+        return;
+      }
+
+      // No navigation in time-travel mode
+      if (viewingSnapshotId !== null) return;
+
+      const maxRow = editedData.length - 1;
+      const maxCol = (editedData[0]?.length ?? 1) - 1;
+
+      // Treat (0,0) as the starting point if nothing is active yet
+      const currentRow = lastActive?.row ?? 0;
+      const currentCol = lastActive?.col ?? 0;
+      let newRow = currentRow;
+      let newCol = currentCol;
+
+      switch (event.key) {
+        case "ArrowDown":
+          newRow = Math.min(maxRow, currentRow + 1);
+          break;
+        case "ArrowUp":
+          newRow = Math.max(0, currentRow - 1);
+          break;
+        case "ArrowRight":
+          newCol = Math.min(maxCol, currentCol + 1);
+          break;
+        case "ArrowLeft":
+          newCol = Math.max(0, currentCol - 1);
+          break;
+        case "Enter":
+        case "F2": {
+          // Start editing the active cell
+          if (lastActive) {
+            event.preventDefault();
+            startEditing(currentRow, currentCol);
+          }
+          return;
+        }
+        default:
+          return;
+      }
+
+      // Only update if position actually changed (or we had no active cell)
+      if (newRow !== currentRow || newCol !== currentCol || !lastActive) {
+        event.preventDefault();
+        setLastActive({ row: newRow, col: newCol });
+      }
+    };
+
+    document.addEventListener("keydown", handleArrowKeys);
+    return () => document.removeEventListener("keydown", handleArrowKeys);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastActive, editedData, viewingSnapshotId]);
 
   // ------ Keyboard shortcut handler for Ctrl+Z / Ctrl+Y ------
   // Placed here, after viewingSnapshotId is declared, so it can safely reference it.
@@ -668,7 +912,8 @@ function SpreadsheetView({
   // appends it as a new entry in the Raft-style log. After a successful save,
   // we clear the "modified cells" set, because those edits are now preserved
   // forever in the snapshot history.
-  const handleSaveSnapshot = async () => {
+  // Accepts an optional note that gets stored with the snapshot.
+  const handleSaveSnapshot = async (note: string | null = null) => {
     setSavingSnapshot(true);
     setToast(null);
 
@@ -683,7 +928,8 @@ function SpreadsheetView({
           row_count: editedData.length,
           column_count: editedData[0]?.length ?? 0,
           changes_from_previous: modifiedCells.size,
-          note: null,
+          note: note && note.trim() !== "" ? note.trim() : null,
+          author: userName || "Anonymous",
         }),
       });
 
@@ -767,6 +1013,113 @@ function SpreadsheetView({
     setViewingSnapshotData(null);
   };
 
+  // ------ Wave 2: Export to Excel handler ------
+  // Sends the current edited data to the backend, which builds a fresh
+  // .xlsx file and streams it back. We trigger a browser download.
+  const handleExportExcel = async () => {
+    setExporting(true);
+    setToast(null);
+
+    try {
+      const response = await fetch(`${BACKEND_URL}/export-spreadsheet`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          filename: data.filename,
+          sheet_name: data.sheet_name,
+          data: viewingSnapshotData ?? editedData,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorBody = await response.json().catch(() => ({}));
+        const detail =
+          typeof errorBody?.detail === "string"
+            ? errorBody.detail
+            : "Could not export the file.";
+        throw new Error(detail);
+      }
+
+      // Pull the filename from the Content-Disposition header if available
+      const contentDisposition = response.headers.get("Content-Disposition") || "";
+      const filenameMatch = contentDisposition.match(/filename="?([^"]+)"?/);
+      const downloadName =
+        filenameMatch?.[1] ||
+        `${data.filename.replace(/\.xlsx$/i, "")}_edited.xlsx`;
+
+      // Get the file as a binary blob and trigger the browser download
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = blobUrl;
+      link.download = downloadName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(blobUrl);
+
+      setToast({
+        kind: "success",
+        text: `Excel file downloaded: ${downloadName}`,
+      });
+      setTimeout(() => setToast(null), 4000);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Export failed.";
+      setToast({ kind: "error", text: message });
+      setTimeout(() => setToast(null), 4000);
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  // ------ Wave 2: AI Compare handler ------
+  // Sends the past snapshot data + current edited data to the backend,
+  // which uses Groq to produce a story of what changed.
+  const handleAICompare = async () => {
+    if (!viewingSnapshotData || !viewingSnapshot) return;
+
+    setComparing(true);
+    setShowCompareModal(true);
+    setCompareResult(null);
+    setToast(null);
+
+    try {
+      const response = await fetch(`${BACKEND_URL}/compare-snapshots`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          filename: data.filename,
+          sheet_name: data.sheet_name,
+          past_data: viewingSnapshotData,
+          current_data: editedData,
+          past_label: `Snapshot from ${formatTimestamp(viewingSnapshot.saved_at)} by ${viewingSnapshot.author || "Anonymous"}`,
+          current_label: "Current (editable) version",
+        }),
+      });
+
+      if (!response.ok) {
+        const errorBody = await response.json().catch(() => ({}));
+        const detail =
+          typeof errorBody?.detail === "string"
+            ? errorBody.detail
+            : "AI compare failed.";
+        throw new Error(detail);
+      }
+
+      const result = await response.json();
+      setCompareResult(result);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Could not compare with AI.";
+      setToast({ kind: "error", text: message });
+      setTimeout(() => setToast(null), 5000);
+      setShowCompareModal(false);
+    } finally {
+      setComparing(false);
+    }
+  };
+
   // ------ AI Analysis handler (Phase 3 — Groq) ------
   // Sends the current spreadsheet data to the backend, which calls Groq AI
   // and returns a structured analysis (anomalies, patterns, recommendations).
@@ -838,6 +1191,44 @@ function SpreadsheetView({
   const viewingSnapshot = viewingSnapshotId
     ? snapshotsList.find((s) => s.id === viewingSnapshotId)
     : null;
+
+  // ------ Wave 2: Visual Diff between snapshot and current ------
+  // When viewing a past snapshot, compute which cells differ from the
+  // current edited data. These cells get highlighted yellow.
+  const { diffCells, currentValuesMap } = useMemo(() => {
+    const diff = new Set<string>();
+    const currentMap = new Map<string, string>();
+
+    if (!viewingSnapshotData) {
+      return { diffCells: diff, currentValuesMap: currentMap };
+    }
+
+    const rowsToCompare = Math.min(viewingSnapshotData.length, editedData.length);
+    const colsToCompare = Math.min(
+      viewingSnapshotData[0]?.length ?? 0,
+      editedData[0]?.length ?? 0
+    );
+
+    for (let r = 0; r < rowsToCompare; r++) {
+      for (let c = 0; c < colsToCompare; c++) {
+        const past = String(viewingSnapshotData[r][c] ?? "");
+        const current = String(editedData[r][c] ?? "");
+        if (past !== current) {
+          const key = `${r}-${c}`;
+          diff.add(key);
+          currentMap.set(key, current);
+        }
+      }
+    }
+
+    return { diffCells: diff, currentValuesMap: currentMap };
+  }, [viewingSnapshotData, editedData]);
+
+  // Structural differences (different row/column count) — useful for the banner
+  const structureChanged = viewingSnapshotData
+    ? viewingSnapshotData.length !== editedData.length ||
+      (viewingSnapshotData[0]?.length ?? 0) !== (editedData[0]?.length ?? 0)
+    : false;
   const changeCount = modifiedCells.size;
   const columnCount = displayedData[0]?.length ?? 0;
 
@@ -863,6 +1254,30 @@ function SpreadsheetView({
         <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4">
           <Brand />
           <div className="flex flex-wrap items-center gap-3">
+
+            {/* THEME TOGGLE — sun/moon icon switches dark and light */}
+            <button
+              onClick={onToggleTheme}
+              className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-700 bg-slate-900 text-base hover:border-emerald-500/40"
+              title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+            >
+              {theme === "dark" ? "☀️" : "🌙"}
+            </button>
+
+            {/* USER NAME BADGE — click to change name */}
+            {userName && (
+              <button
+                onClick={onChangeName}
+                className="flex items-center gap-2 rounded-full border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-emerald-500/40 hover:text-emerald-300"
+                title="Click to change your name"
+              >
+                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-500/20 text-emerald-300">
+                  {userName.charAt(0).toUpperCase()}
+                </span>
+                <span>{userName}</span>
+              </button>
+            )}
+
             {changeCount > 0 && (
               <>
                 <span className="inline-flex items-center gap-2 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-300">
@@ -876,10 +1291,13 @@ function SpreadsheetView({
                   Discard
                 </button>
                 <button
-                  onClick={handleSaveSnapshot}
+                  onClick={() => {
+                    setSnapshotNote("");
+                    setShowSaveModal(true);
+                  }}
                   disabled={savingSnapshot}
                   className="flex items-center gap-2 rounded-lg bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 transition-colors hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
-                  title="Saves this version as a permanent snapshot in the time machine log."
+                  title="Save this version with an optional note describing what changed"
                 >
                   {savingSnapshot ? (
                     <>
@@ -908,6 +1326,26 @@ function SpreadsheetView({
                 <>
                   <span>✨</span>
                   <span>Analyze with AI</span>
+                </>
+              )}
+            </button>
+
+            {/* EXPORT BUTTON — download as .xlsx */}
+            <button
+              onClick={handleExportExcel}
+              disabled={exporting}
+              className="flex items-center gap-2 rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-4 py-2 text-sm font-semibold text-cyan-200 transition-colors hover:bg-cyan-500/20 hover:text-cyan-100 disabled:cursor-not-allowed disabled:opacity-60"
+              title="Download the current spreadsheet as an Excel file"
+            >
+              {exporting ? (
+                <>
+                  <span className="h-3 w-3 animate-spin rounded-full border-2 border-cyan-200 border-t-transparent" />
+                  <span>Exporting...</span>
+                </>
+              ) : (
+                <>
+                  <span>📥</span>
+                  <span>Export</span>
                 </>
               )}
             </button>
@@ -944,19 +1382,60 @@ function SpreadsheetView({
       {isReadOnly && viewingSnapshot && (
         <div className="border-b border-purple-500/30 bg-purple-500/10 px-8 py-3 backdrop-blur">
           <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 text-sm">
-            <div className="flex items-center gap-3 text-purple-200">
+            <div className="flex flex-wrap items-center gap-3 text-purple-200">
               <span className="text-lg">🕐</span>
               <span className="font-semibold">
-                Time travel mode — viewing snapshot from {formatTimestamp(viewingSnapshot.saved_at)}
+                Time travel — {formatTimestamp(viewingSnapshot.saved_at)}
               </span>
-              <span className="text-xs text-purple-400">(read-only)</span>
+              <span className="text-xs text-purple-400">by {viewingSnapshot.author || "Anonymous"}</span>
+
+              {/* Diff indicator — shows what's changed since this snapshot */}
+              {diffCells.size > 0 && (
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-yellow-500/40 bg-yellow-500/15 px-2.5 py-1 text-xs font-semibold text-yellow-200">
+                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-yellow-400" />
+                  {diffCells.size} cell{diffCells.size !== 1 ? "s" : ""} changed since
+                </span>
+              )}
+              {structureChanged && (
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-orange-500/40 bg-orange-500/15 px-2.5 py-1 text-xs font-semibold text-orange-200">
+                  ⚠️ Structure differs (rows/columns)
+                </span>
+              )}
+              {diffCells.size === 0 && !structureChanged && (
+                <span className="text-xs text-purple-400">
+                  ✓ No changes since this version
+                </span>
+              )}
             </div>
-            <button
-              onClick={returnToCurrent}
-              className="rounded-lg bg-purple-500 px-4 py-1.5 text-sm font-semibold text-slate-950 transition-colors hover:bg-purple-400"
-            >
-              ← Return to Current
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              {/* AI Compare button — only useful when there are changes to compare */}
+              {(diffCells.size > 0 || structureChanged) && (
+                <button
+                  onClick={handleAICompare}
+                  disabled={comparing}
+                  className="flex items-center gap-2 rounded-lg border border-purple-500/40 bg-gradient-to-r from-purple-500/20 to-emerald-500/15 px-3 py-1.5 text-xs font-semibold text-purple-100 transition-colors hover:from-purple-500/30 hover:to-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                  title="Ask AI to explain what changed between this snapshot and the current version"
+                >
+                  {comparing ? (
+                    <>
+                      <span className="h-3 w-3 animate-spin rounded-full border-2 border-purple-200 border-t-transparent" />
+                      <span>Comparing...</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>✨</span>
+                      <span>AI Compare</span>
+                    </>
+                  )}
+                </button>
+              )}
+              <button
+                onClick={returnToCurrent}
+                className="rounded-lg bg-purple-500 px-4 py-1.5 text-sm font-semibold text-slate-950 transition-colors hover:bg-purple-400"
+              >
+                ← Return to Current
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -1221,20 +1700,29 @@ function SpreadsheetView({
                         lastActive?.row === rowIndex &&
                         lastActive?.col === colIndex &&
                         !isEditing;
+                      // Visual diff: in time-travel mode, this cell changed since the snapshot
+                      const isDiffCell = isReadOnly && diffCells.has(cellKey);
+                      const currentNow = currentValuesMap.get(cellKey);
+                      const tooltip = isDiffCell && currentNow !== undefined
+                        ? `Now: ${currentNow || "(empty)"}`
+                        : undefined;
 
                       return (
                         <td
                           key={colIndex}
+                          title={tooltip}
                           onClick={() => !isReadOnly && !isEditing && startEditing(rowIndex, colIndex)}
                           className={`min-w-[120px] px-4 py-3 transition-colors ${
                             isReadOnly
-                              ? "cursor-default text-purple-100/90"
+                              ? isDiffCell
+                                ? "cursor-default bg-yellow-500/15 text-yellow-100 ring-1 ring-inset ring-yellow-500/50"
+                                : "cursor-default text-purple-100/90"
                               : isSearchMatch
                                 ? "cursor-text bg-yellow-500/20 text-yellow-100 ring-1 ring-inset ring-yellow-500/50"
                                 : isModified
                                   ? "cursor-text bg-emerald-500/10 text-emerald-200 ring-1 ring-inset ring-emerald-500/40"
                                   : isActiveCell
-                                    ? "cursor-text bg-slate-800/60 text-slate-100 ring-1 ring-inset ring-slate-500/50"
+                                    ? "cursor-text bg-emerald-500/15 text-slate-100 ring-2 ring-inset ring-emerald-500/70"
                                     : "cursor-text text-slate-300 hover:bg-slate-800/40"
                           }`}
                         >
@@ -1330,6 +1818,255 @@ function SpreadsheetView({
         </p>
 
       </main>
+
+      {/* AI COMPARE MODAL — shows the AI-generated story of what changed */}
+      {showCompareModal && (
+        <>
+          <div
+            className="fixed inset-0 z-40 bg-slate-950/75 backdrop-blur-sm"
+            onClick={() => !comparing && setShowCompareModal(false)}
+          />
+
+          <aside className="fixed left-1/2 top-1/2 z-50 flex max-h-[88vh] w-full max-w-2xl -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-purple-500/40 bg-slate-950 shadow-2xl">
+
+            {/* Header */}
+            <div className="flex items-center justify-between border-b border-slate-800 bg-gradient-to-r from-purple-500/15 to-emerald-500/10 px-6 py-4">
+              <div className="flex items-center gap-3">
+                <span className="text-2xl">✨</span>
+                <div>
+                  <h2 className="text-lg font-bold tracking-tight">AI Compare</h2>
+                  <p className="text-xs text-slate-400">
+                    {compareResult
+                      ? `${compareResult.total_changes} change${compareResult.total_changes !== 1 ? "s" : ""} between versions`
+                      : "Asking AI to compare the two versions..."}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => !comparing && setShowCompareModal(false)}
+                disabled={comparing}
+                className="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-slate-200 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="flex-1 overflow-y-auto px-6 py-5">
+              {comparing ? (
+                <div className="flex flex-col items-center justify-center gap-4 py-12">
+                  <div className="relative">
+                    <span className="block h-16 w-16 animate-spin rounded-full border-4 border-purple-500/30 border-t-purple-400" />
+                    <span className="absolute inset-0 flex items-center justify-center text-2xl">✨</span>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-lg font-semibold text-purple-200">
+                      AI is comparing the two versions...
+                    </p>
+                    <p className="mt-1 text-sm text-slate-400">
+                      Reading every changed cell and writing the story.
+                    </p>
+                    <p className="mt-3 text-xs text-slate-500">
+                      Usually takes 3 to 8 seconds.
+                    </p>
+                  </div>
+                </div>
+              ) : compareResult ? (
+                <div className="space-y-5">
+
+                  {/* Compare context */}
+                  <div className="rounded-xl border border-slate-800 bg-slate-900 p-3 text-xs">
+                    <div className="flex items-center gap-2 text-slate-400">
+                      <span className="text-purple-400">🕐</span>
+                      <span className="font-medium">{compareResult.past_label}</span>
+                    </div>
+                    <div className="my-1 ml-3 border-l-2 border-slate-700 pl-3 text-slate-600">
+                      vs
+                    </div>
+                    <div className="flex items-center gap-2 text-slate-400">
+                      <span className="text-emerald-400">📍</span>
+                      <span className="font-medium">{compareResult.current_label}</span>
+                    </div>
+                  </div>
+
+                  {/* Summary */}
+                  {compareResult.analysis.summary && (
+                    <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4">
+                      <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-emerald-300">
+                        📋 Summary
+                      </h3>
+                      <p className="text-sm leading-relaxed text-slate-200">
+                        {compareResult.analysis.summary}
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Key Changes */}
+                  {compareResult.analysis.key_changes && compareResult.analysis.key_changes.length > 0 && (
+                    <InsightSection
+                      icon="🎯"
+                      title="Key Changes"
+                      color="purple"
+                      items={compareResult.analysis.key_changes}
+                    />
+                  )}
+
+                  {/* Patterns */}
+                  {compareResult.analysis.patterns && compareResult.analysis.patterns.length > 0 && (
+                    <InsightSection
+                      icon="🔍"
+                      title="Patterns"
+                      color="cyan"
+                      items={compareResult.analysis.patterns}
+                    />
+                  )}
+
+                  {/* Impact */}
+                  {compareResult.analysis.impact && compareResult.analysis.impact.length > 0 && (
+                    <InsightSection
+                      icon="💥"
+                      title="Likely Impact"
+                      color="amber"
+                      items={compareResult.analysis.impact}
+                    />
+                  )}
+
+                  {/* Raw diff sample */}
+                  {compareResult.diffs_sample && compareResult.diffs_sample.length > 0 && (
+                    <details className="rounded-xl border border-slate-800 bg-slate-900 p-4">
+                      <summary className="cursor-pointer text-xs font-bold uppercase tracking-wider text-slate-400">
+                        🔬 View raw diffs ({compareResult.diffs_sample.length} cell{compareResult.diffs_sample.length !== 1 ? "s" : ""})
+                      </summary>
+                      <ul className="mt-3 space-y-1 text-xs font-mono">
+                        {compareResult.diffs_sample.map((diff, idx) => (
+                          <li key={idx} className="flex items-center gap-2 text-slate-300">
+                            <span className="rounded bg-slate-800 px-1.5 py-0.5 text-purple-300">
+                              {diff.cell}
+                            </span>
+                            <span className="text-slate-500 line-through">{diff.past || "(empty)"}</span>
+                            <span className="text-slate-500">→</span>
+                            <span className="font-semibold text-emerald-300">{diff.current || "(empty)"}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                  )}
+
+                </div>
+              ) : (
+                <div className="py-12 text-center text-sm text-slate-500">
+                  No comparison yet.
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="border-t border-slate-800 bg-slate-900/50 px-6 py-3 text-center text-xs text-slate-500">
+              AI can make mistakes. Verify important findings yourself.
+            </div>
+
+          </aside>
+        </>
+      )}
+
+      {/* SAVE SNAPSHOT MODAL — opens when user clicks "Save Snapshot" */}
+      {showSaveModal && (
+        <>
+          <div
+            className="fixed inset-0 z-40 bg-slate-950/70 backdrop-blur-sm"
+            onClick={() => !savingSnapshot && setShowSaveModal(false)}
+          />
+
+          <div className="fixed left-1/2 top-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-emerald-500/30 bg-slate-950 shadow-2xl">
+
+            {/* Modal header */}
+            <div className="border-b border-slate-800 bg-gradient-to-r from-emerald-500/10 to-purple-500/10 px-6 py-4">
+              <div className="flex items-center gap-3">
+                <span className="text-2xl">💾</span>
+                <div>
+                  <h2 className="text-lg font-bold tracking-tight">Save Snapshot</h2>
+                  <p className="text-xs text-slate-400">
+                    Capture this version forever in your time machine
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Modal body */}
+            <div className="px-6 py-5">
+
+              {/* Stats line */}
+              <div className="mb-4 flex flex-wrap items-center gap-3 text-xs">
+                <span className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 font-semibold text-emerald-300">
+                  {changeCount} change{changeCount !== 1 ? "s" : ""}
+                </span>
+                <span className="text-slate-500">
+                  {editedData.length} rows · {editedData[0]?.length ?? 0} columns
+                </span>
+              </div>
+
+              {/* Note input */}
+              <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-400">
+                Add a note (optional)
+              </label>
+              <input
+                type="text"
+                value={snapshotNote}
+                onChange={(event) => setSnapshotNote(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !savingSnapshot) {
+                    setShowSaveModal(false);
+                    handleSaveSnapshot(snapshotNote);
+                  }
+                  if (event.key === "Escape") {
+                    setShowSaveModal(false);
+                  }
+                }}
+                placeholder='e.g., "Updated Q1 totals" or "Fixed Vendor X amount"'
+                autoFocus
+                maxLength={200}
+                className="w-full rounded-lg border border-slate-700 bg-slate-900 px-4 py-3 text-sm text-slate-100 placeholder:text-slate-600 focus:border-emerald-500/50 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
+              />
+              <p className="mt-2 text-xs text-slate-500">
+                A short note helps future you understand what changed. Leave blank to skip.
+              </p>
+
+            </div>
+
+            {/* Modal footer */}
+            <div className="flex items-center justify-end gap-2 border-t border-slate-800 bg-slate-900/50 px-6 py-3">
+              <button
+                onClick={() => setShowSaveModal(false)}
+                disabled={savingSnapshot}
+                className="rounded-lg border border-slate-700 bg-slate-900 px-4 py-2 text-sm font-medium text-slate-300 transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  setShowSaveModal(false);
+                  handleSaveSnapshot(snapshotNote);
+                }}
+                disabled={savingSnapshot}
+                className="flex items-center gap-2 rounded-lg bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 transition-colors hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {savingSnapshot ? (
+                  <>
+                    <span className="h-3 w-3 animate-spin rounded-full border-2 border-slate-950 border-t-transparent" />
+                    <span>Saving...</span>
+                  </>
+                ) : (
+                  <>
+                    <span>💾</span>
+                    <span>Save Snapshot</span>
+                  </>
+                )}
+              </button>
+            </div>
+
+          </div>
+        </>
+      )}
 
       {/* AI INSIGHTS PANEL — appears when showAIPanel is true */}
       {showAIPanel && (
@@ -1586,11 +2323,21 @@ function SpreadsheetView({
                             )}
                           </div>
                           <p className="mt-1 text-xs text-slate-400">
+                            <span className="font-semibold text-emerald-400/80">
+                              By {snapshot.author || "Anonymous"}
+                            </span>
+                            <span className="mx-1.5 text-slate-600">·</span>
                             {formatTimestamp(snapshot.saved_at)}
                           </p>
                           <p className="mt-0.5 text-xs text-slate-500">
                             {snapshot.changes_from_previous} change{snapshot.changes_from_previous !== 1 ? "s" : ""} from previous
                           </p>
+                          {/* Show user's note if provided */}
+                          {snapshot.note && (
+                            <p className="mt-2 rounded border border-slate-700/50 bg-slate-950/50 px-2 py-1 text-xs italic text-slate-300">
+                              📝 {snapshot.note}
+                            </p>
+                          )}
                         </button>
                       );
                     })}

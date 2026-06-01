@@ -23,3 +23,84 @@ body {
   color: var(--foreground);
   font-family: var(--font-outfit), system-ui, sans-serif;
 }
+
+/* ============================================ */
+/* Light theme — overrides dark colors when html has class "theme-light" */
+/* ============================================ */
+
+html.theme-light .bg-slate-950 { background-color: #f8fafc !important; }
+html.theme-light .bg-slate-950\/70,
+html.theme-light .bg-slate-950\/75,
+html.theme-light .bg-slate-950\/80,
+html.theme-light .bg-slate-950\/90,
+html.theme-light .bg-slate-950\/95 { background-color: rgba(248, 250, 252, 0.92) !important; }
+html.theme-light .bg-slate-900 { background-color: #ffffff !important; }
+html.theme-light .bg-slate-900\/50,
+html.theme-light .bg-slate-900\/60,
+html.theme-light .bg-slate-900\/80,
+html.theme-light .bg-slate-900\/90 { background-color: rgba(255, 255, 255, 0.85) !important; }
+html.theme-light .bg-slate-800 { background-color: #f1f5f9 !important; }
+html.theme-light .bg-slate-800\/30,
+html.theme-light .bg-slate-800\/40,
+html.theme-light .bg-slate-800\/50,
+html.theme-light .bg-slate-800\/60 { background-color: rgba(241, 245, 249, 0.7) !important; }
+
+html.theme-light .text-white { color: #0f172a !important; }
+html.theme-light .text-slate-100 { color: #1e293b !important; }
+html.theme-light .text-slate-200 { color: #334155 !important; }
+html.theme-light .text-slate-300 { color: #475569 !important; }
+html.theme-light .text-slate-400 { color: #64748b !important; }
+html.theme-light .text-slate-500 { color: #94a3b8 !important; }
+html.theme-light .text-slate-600 { color: #cbd5e1 !important; }
+
+html.theme-light .border-slate-800 { border-color: #94a3b8 !important; }
+html.theme-light .border-slate-700 { border-color: #64748b !important; }
+html.theme-light .border-slate-800\/50,
+html.theme-light .border-slate-700\/50 { border-color: rgba(148, 163, 184, 0.6) !important; }
+
+html.theme-light .divide-slate-800\/80 > * { border-color: rgba(148, 163, 184, 0.5) !important; }
+html.theme-light .divide-slate-800\/80 > * + * { border-top-color: rgba(148, 163, 184, 0.5) !important; }
+html.theme-light .ring-slate-500\/50 { --tw-ring-color: rgba(71, 85, 105, 0.6) !important; }
+
+/* Stronger table grid lines in light mode for readability */
+html.theme-light table { border-color: #94a3b8 !important; }
+html.theme-light table td,
+html.theme-light table th { border-color: #cbd5e1 !important; }
+html.theme-light tbody tr { border-color: #cbd5e1 !important; }
+html.theme-light thead { border-bottom: 2px solid #94a3b8 !important; }
+
+/* Add visible cell borders in light mode for spreadsheet clarity */
+html.theme-light tbody td {
+  border-top: 1px solid #cbd5e1 !important;
+  border-right: 1px solid #e2e8f0 !important;
+}
+html.theme-light thead th {
+  border-right: 1px solid #cbd5e1 !important;
+  border-bottom: 1px solid #94a3b8 !important;
+}
+
+/* Strengthen muted text in light mode for readability */
+html.theme-light .text-emerald-200\/80 { color: #047857 !important; }
+html.theme-light .text-emerald-200 { color: #047857 !important; }
+html.theme-light .text-emerald-300 { color: #059669 !important; }
+html.theme-light .text-emerald-400 { color: #10b981 !important; }
+html.theme-light .text-purple-200 { color: #6d28d9 !important; }
+html.theme-light .text-purple-300 { color: #7c3aed !important; }
+html.theme-light .text-cyan-200 { color: #0e7490 !important; }
+html.theme-light .text-cyan-300 { color: #0891b2 !important; }
+html.theme-light .text-yellow-200 { color: #854d0e !important; }
+html.theme-light .text-amber-300 { color: #b45309 !important; }
+html.theme-light .text-red-300 { color: #b91c1c !important; }
+
+/* Background tints — slightly stronger in light mode for visibility */
+html.theme-light .bg-emerald-500\/10 { background-color: rgba(16, 185, 129, 0.15) !important; }
+html.theme-light .bg-purple-500\/10 { background-color: rgba(168, 85, 247, 0.15) !important; }
+html.theme-light .bg-purple-500\/15 { background-color: rgba(168, 85, 247, 0.2) !important; }
+html.theme-light .bg-cyan-500\/10 { background-color: rgba(6, 182, 212, 0.15) !important; }
+html.theme-light .bg-yellow-500\/15,
+html.theme-light .bg-yellow-500\/20 { background-color: rgba(234, 179, 8, 0.25) !important; }
+html.theme-light .bg-red-500\/10 { background-color: rgba(239, 68, 68, 0.15) !important; }
+
+/* Body background follows the theme */
+html.theme-light body { background: #f8fafc; color: #0f172a; }
+html.theme-dark body { background: #020617; color: #ffffff; }

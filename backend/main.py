@@ -24,8 +24,9 @@ from uuid import uuid4
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from groq import Groq
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 from pydantic import BaseModel
 
 # ============================================
@@ -62,6 +63,8 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Expose Content-Disposition so frontend can read the export filename
+    expose_headers=["Content-Disposition"],
 )
 
 
@@ -226,6 +229,7 @@ class SnapshotRequest(BaseModel):
     column_count: int
     changes_from_previous: int = 0
     note: str | None = None
+    author: str | None = None  # Who is saving this version
 
 
 @app.post("/save-snapshot")
@@ -241,6 +245,7 @@ def save_snapshot(snapshot: SnapshotRequest):
         "column_count": snapshot.column_count,
         "changes_from_previous": snapshot.changes_from_previous,
         "note": snapshot.note,
+        "author": snapshot.author or "Anonymous",
     }
     snapshots_log.append(new_snapshot)
     return {
@@ -273,6 +278,7 @@ def list_snapshots(filename: str | None = None):
             "column_count": s["column_count"],
             "changes_from_previous": s["changes_from_previous"],
             "note": s["note"],
+            "author": s.get("author", "Anonymous"),
         }
         for s in matching
     ]
@@ -414,3 +420,228 @@ Rules:
             status_code=500,
             detail=f"AI analysis failed: {error}",
         )
+
+
+# ============================================
+# AI Compare endpoint (Phase 3 — Compare two versions with AI)
+# ============================================
+class CompareRequest(BaseModel):
+    """The shape of data sent when asking AI to compare two snapshots."""
+    filename: str
+    sheet_name: str
+    past_data: list[list[Any]]
+    current_data: list[list[Any]]
+    past_label: str       # e.g., "Snapshot from May 31 at 8:00 PM"
+    current_label: str    # e.g., "Current (editable) version"
+
+
+def _col_letter(index: int) -> str:
+    """Convert a 0-based column index into Excel-style letters."""
+    result = ""
+    n = index
+    while n >= 0:
+        result = chr(65 + (n % 26)) + result
+        n = n // 26 - 1
+    return result
+
+
+@app.post("/compare-snapshots")
+def compare_snapshots(request: CompareRequest):
+    """
+    Use Groq AI to compare two versions of a spreadsheet and explain
+    what changed in plain English.
+    """
+    if not groq_client:
+        raise HTTPException(
+            status_code=500,
+            detail="Artificial Intelligence is not configured.",
+        )
+
+    past = request.past_data
+    current = request.current_data
+
+    # Compute cell-by-cell differences
+    rows_to_compare = min(len(past), len(current))
+    cols_to_compare = min(
+        len(past[0]) if past else 0,
+        len(current[0]) if current else 0,
+    )
+
+    diffs: list[dict[str, Any]] = []
+    for row_idx in range(rows_to_compare):
+        for col_idx in range(cols_to_compare):
+            past_value = (
+                str(past[row_idx][col_idx]) if past[row_idx][col_idx] is not None else ""
+            )
+            current_value = (
+                str(current[row_idx][col_idx])
+                if current[row_idx][col_idx] is not None
+                else ""
+            )
+            if past_value != current_value:
+                diffs.append(
+                    {
+                        "cell": f"{_col_letter(col_idx)}{row_idx + 1}",
+                        "row": row_idx + 1,
+                        "column": _col_letter(col_idx),
+                        "past": past_value,
+                        "current": current_value,
+                    }
+                )
+
+    structural_change = len(past) != len(current) or (
+        (past[0] if past else []) != []
+        and (current[0] if current else []) != []
+        and len(past[0]) != len(current[0])
+    )
+
+    # Build a clean diff list for the AI prompt
+    if diffs:
+        diff_list_text = "\n".join(
+            f"- {d['cell']}: '{d['past']}' → '{d['current']}'"
+            for d in diffs[:60]  # Limit to first 60 to stay under token limit
+        )
+        if len(diffs) > 60:
+            diff_list_text += f"\n... and {len(diffs) - 60} more changes"
+    else:
+        diff_list_text = "No cell-value differences detected."
+
+    user_prompt = f"""You are comparing two versions of a spreadsheet.
+
+File: {request.filename}
+Sheet: {request.sheet_name}
+
+PAST VERSION: {request.past_label}
+  - Dimensions: {len(past)} rows x {len(past[0]) if past else 0} columns
+
+CURRENT VERSION: {request.current_label}
+  - Dimensions: {len(current)} rows x {len(current[0]) if current else 0} columns
+
+Total cell changes: {len(diffs)}
+Structural change: {"YES (rows/columns added or removed)" if structural_change else "NO"}
+
+CHANGES:
+{diff_list_text}
+
+Respond with your analysis as a strict JSON object:
+{{
+  "summary": "1-2 sentence story of what changed between these versions",
+  "key_changes": [
+    "List 3-5 of the MOST notable changes in plain English",
+    "Mention specific cells, values, and what they likely represent",
+    "Example: 'Sales for January 5 increased from 0 to 6000'"
+  ],
+  "patterns": [
+    "What patterns or themes emerge from the changes?",
+    "Examples: all in one column, mostly increases, structural reorganization"
+  ],
+  "impact": [
+    "What is the likely real-world impact of these changes?",
+    "Example: total revenue affected, important corrections, audit risks"
+  ]
+}}
+
+Rules:
+- Strict JSON only, no markdown
+- Each list 2 to 5 items
+- Be specific (mention cells, values)
+- Empty list is OK if nothing meaningful for that category
+"""
+
+    try:
+        response = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an expert spreadsheet auditor comparing two versions. "
+                        "You respond ONLY in valid JSON, never in markdown or prose."
+                    ),
+                },
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.3,
+            max_tokens=2048,
+        )
+
+        ai_text = response.choices[0].message.content or "{}"
+        analysis = json.loads(ai_text)
+
+        return {
+            "success": True,
+            "filename": request.filename,
+            "total_changes": len(diffs),
+            "structural_change": structural_change,
+            "past_label": request.past_label,
+            "current_label": request.current_label,
+            "diffs_sample": diffs[:30],
+            "analysis": analysis,
+        }
+
+    except json.JSONDecodeError as error:
+        raise HTTPException(
+            status_code=500,
+            detail=f"AI returned invalid JSON: {error}",
+        )
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail=f"AI comparison failed: {error}",
+        )
+
+
+# ============================================
+# Export endpoint — Wave 2: Download as .xlsx
+# ============================================
+class ExportRequest(BaseModel):
+    """Payload for exporting current data back to an Excel file."""
+    filename: str
+    sheet_name: str
+    data: list[list[Any]]
+
+
+@app.post("/export-spreadsheet")
+def export_spreadsheet(request: ExportRequest):
+    """
+    Build a fresh .xlsx workbook from the user's edited data and stream
+    it back to the browser as a download.
+    """
+    # Create a new workbook with one sheet
+    workbook = Workbook()
+    sheet = workbook.active
+    if sheet is None:
+        raise HTTPException(status_code=500, detail="Failed to create sheet.")
+
+    # Set the sheet name (sanitize: Excel doesn't allow some characters)
+    safe_sheet_name = (request.sheet_name or "Sheet1")[:31]
+    for invalid_char in r"\/?*[]:":
+        safe_sheet_name = safe_sheet_name.replace(invalid_char, "_")
+    sheet.title = safe_sheet_name
+
+    # Write every row from the request
+    for row in request.data:
+        sheet.append(list(row))
+
+    # Save to an in-memory buffer
+    buffer = BytesIO()
+    workbook.save(buffer)
+    buffer.seek(0)
+
+    # Build the download filename — branded with "_chronosheet_edited"
+    base = request.filename
+    if base.lower().endswith(".xlsx"):
+        base = base[:-5]
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+    download_filename = f"{base}_{timestamp}_chronosheet_edited.xlsx"
+
+    return StreamingResponse(
+        buffer,
+        media_type=(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+        headers={
+            "Content-Disposition": f'attachment; filename="{download_filename}"',
+        },
+    )
