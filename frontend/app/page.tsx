@@ -9,12 +9,38 @@
 "use client";
 
 import { ChangeEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Area,
+  AreaChart,
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Legend,
+  Line,
+  LineChart,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 
 import BackendStatus from "./components/BackendStatus";
 
 // The shape of the response we get from the backend after upload
 type CellValue = string | number | boolean | null;
 type SheetMatrix = CellValue[][];
+
+type SheetInfo = {
+  name: string;
+  row_count: number;
+  column_count: number;
+  data: SheetMatrix;
+  skipped_top?: number;
+  skipped_bottom?: number;
+};
 
 type SpreadsheetData = {
   success: boolean;
@@ -24,6 +50,7 @@ type SpreadsheetData = {
   column_count: number;
   data: SheetMatrix;
   message: string;
+  sheets?: SheetInfo[];  // All sheets in the workbook
 };
 
 const BACKEND_URL = "http://localhost:8000";
@@ -274,6 +301,103 @@ export default function Home() {
 
       </main>
 
+      {/* ======================================== */}
+      {/* FEATURES SHOWCASE — BENTO GRID (Apple-style) */}
+      {/* ======================================== */}
+      <section className="relative z-10 mx-auto max-w-7xl px-8 py-20">
+        <div className="mb-12 text-center">
+          <span className="inline-block rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-xs font-semibold uppercase tracking-wider text-emerald-300">
+            ✨ Powerful Features
+          </span>
+          <h2 className="mt-4 text-4xl font-bold tracking-tight sm:text-5xl">
+            Everything you need,{" "}
+            <span className="bg-gradient-to-r from-emerald-400 to-purple-400 bg-clip-text text-transparent">
+              in one place
+            </span>
+          </h2>
+          <p className="mt-4 text-lg text-slate-400">
+            Edit, analyze, visualize, and time-travel through your data — all in your browser.
+          </p>
+        </div>
+
+        {/* Bento grid — varying card sizes for visual interest */}
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 lg:auto-rows-[180px]">
+
+          {/* FEATURED — Time Machine (2x2 big card with mini timeline) */}
+          <BentoFeatured
+            icon="🕐"
+            title="Time Machine"
+            description="Save snapshots of any version. Travel back to see exactly how your data looked at any moment — like Git for spreadsheets."
+            accent="emerald"
+          />
+
+          {/* AI Chat — wide card (2x1) */}
+          <BentoWide
+            icon="🤖"
+            title="Chat With Your Spreadsheet"
+            description="Ask questions in plain English. AI reads your data and answers in seconds."
+            accent="purple"
+          />
+
+          {/* Voice — small card */}
+          <BentoSmall
+            icon="🎤"
+            title="Voice Queries"
+            description="Speak your questions. AI listens & answers."
+            accent="cyan"
+          />
+
+          {/* Visual Diff — small card */}
+          <BentoSmall
+            icon="🔍"
+            title="Visual Diff"
+            description="Changed cells glow yellow in time-travel mode."
+            accent="yellow"
+          />
+
+          {/* Charts — wide card */}
+          <BentoWide
+            icon="📊"
+            title="Auto-Generate Charts"
+            description="One click. AI picks the perfect chart type and renders it instantly."
+            accent="amber"
+          />
+
+          {/* Excel-Style — small */}
+          <BentoSmall
+            icon="✏️"
+            title="Excel-Style Editing"
+            description="Toolbar, shortcuts, freeze panes."
+            accent="emerald"
+          />
+
+          {/* Multi-Sheet — small */}
+          <BentoSmall
+            icon="📑"
+            title="Multi-Sheet"
+            description="All your tabs work natively."
+            accent="cyan"
+          />
+
+          {/* Export — wide */}
+          <BentoWide
+            icon="📥"
+            title="Export to Excel"
+            description="Download your edits as a fresh .xlsx with timestamp and branding."
+            accent="purple"
+          />
+
+          {/* Dark/Light — wide */}
+          <BentoWide
+            icon="🌗"
+            title="Dark & Light Themes"
+            description="Toggle between elegant dark and crisp light modes — your choice persists."
+            accent="slate"
+          />
+
+        </div>
+      </section>
+
       <footer className="relative z-10 px-8 py-8 text-center text-sm text-slate-600">
         Excel forgets. ChronoSheet remembers.
       </footer>
@@ -368,9 +492,26 @@ function SpreadsheetView({
   theme: "dark" | "light";
   onToggleTheme: () => void;
 }) {
-  // A mutable copy of the data that the user can edit
+  // ------ Multi-sheet state ------
+  // Which sheet (tab) is currently active?
+  const [activeSheetIndex, setActiveSheetIndex] = useState(0);
+  // Sheets available (from upload). Falls back to a single sheet if none provided.
+  const availableSheets: SheetInfo[] = data.sheets ?? [{
+    name: data.sheet_name,
+    row_count: data.row_count,
+    column_count: data.column_count,
+    data: data.data,
+  }];
+  const activeSheet = availableSheets[activeSheetIndex] ?? availableSheets[0];
+
+  // Per-sheet edited data cache so switching sheets preserves edits
+  const [sheetEditsCache, setSheetEditsCache] = useState<{ [name: string]: SheetMatrix }>({});
+  // Per-sheet modified cells cache
+  const [sheetModifiedCache, setSheetModifiedCache] = useState<{ [name: string]: Set<string> }>({});
+
+  // A mutable copy of the active sheet's data
   const [editedData, setEditedData] = useState<SheetMatrix>(() =>
-    data.data.map((row) => [...row])
+    activeSheet.data.map((row) => [...row])
   );
 
   // Set of cells that have been changed (using "row-col" keys)
@@ -416,6 +557,37 @@ function SpreadsheetView({
   // ------ Wave 2: Export to Excel state ------
   const [exporting, setExporting] = useState(false);
 
+  // ------ Wave 3: Chat with Spreadsheet state ------
+  type ChatMessage = { role: "user" | "assistant"; content: string };
+  const [showChat, setShowChat] = useState(false);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatThinking, setChatThinking] = useState(false);
+
+  // ------ Wave 3: Voice queries (Web Speech API) ------
+  // Is the mic actively listening?
+  const [isListening, setIsListening] = useState(false);
+  // Browser support check
+  const [voiceSupported, setVoiceSupported] = useState(false);
+  // Reference to the SpeechRecognition instance
+  const speechRecognitionRef = useRef<unknown>(null);
+
+  // ------ Wave 3: Auto-generate Charts state ------
+  type ChartType = "bar" | "line" | "pie" | "area";
+  type ChartSuggestion = {
+    chart_type: ChartType;
+    title: string;
+    x_column: number;
+    y_column: number;
+    x_label: string;
+    y_label: string;
+    reasoning: string;
+  };
+  const [showCharts, setShowCharts] = useState(false);
+  const [generatingChart, setGeneratingChart] = useState(false);
+  const [chartSuggestion, setChartSuggestion] = useState<ChartSuggestion | null>(null);
+  const [chartTypeOverride, setChartTypeOverride] = useState<ChartType | null>(null);
+
   // ------ Wave 2: AI Compare state ------
   type CompareAnalysis = {
     summary: string;
@@ -440,6 +612,16 @@ function SpreadsheetView({
   const [lastActive, setLastActive] = useState<{ row: number; col: number } | null>(null);
   // What the user typed in the search bar (live highlights matching cells)
   const [searchQuery, setSearchQuery] = useState("");
+
+  // ------ Multi-row selection (Excel-style) ------
+  // Set of row indices that are currently selected
+  const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
+  // The last row clicked — used as anchor for Shift+click range selection
+  const [lastClickedRowForRange, setLastClickedRowForRange] = useState<number | null>(null);
+  // Is the user currently dragging to select multiple rows?
+  const [isDragSelecting, setIsDragSelecting] = useState(false);
+  // The row where drag started
+  const [dragStartRow, setDragStartRow] = useState<number | null>(null);
   // Which column is currently sorted (null = no sort, original order)
   const [sortColumn, setSortColumn] = useState<number | null>(null);
   // Direction of sort: "asc" (smallest first) or "desc" (largest first)
@@ -449,9 +631,48 @@ function SpreadsheetView({
   const [preSortOrder, setPreSortOrder] = useState<SheetMatrix | null>(null);
   // Is the Statistics panel open?
   const [showStats, setShowStats] = useState(false);
+
+  // ------ Freeze panes (Excel-style) ------
+  // How many rows from the top should stay visible while scrolling?
+  const [frozenRows, setFrozenRows] = useState(0);
+  // How many columns from the left should stay visible while scrolling?
+  const [frozenColumns, setFrozenColumns] = useState(0);
+
+  // Load freeze preferences from localStorage
+  useEffect(() => {
+    const r = localStorage.getItem("chronosheet-frozen-rows");
+    const c = localStorage.getItem("chronosheet-frozen-columns");
+    if (r && !isNaN(parseInt(r))) setFrozenRows(parseInt(r));
+    if (c && !isNaN(parseInt(c))) setFrozenColumns(parseInt(c));
+  }, []);
+
+  const handleFreezeRowsChange = (n: number) => {
+    setFrozenRows(n);
+    localStorage.setItem("chronosheet-frozen-rows", String(n));
+  };
+
+  const handleFreezeColumnsChange = (n: number) => {
+    setFrozenColumns(n);
+    localStorage.setItem("chronosheet-frozen-columns", String(n));
+  };
   // How dates should be displayed throughout the table
   type DateFormat = "iso" | "dmy" | "mdy" | "short" | "long";
-  const [dateFormat, setDateFormat] = useState<DateFormat>("iso");
+  // Default to DD/MM/YYYY (most natural for India and Europe)
+  const [dateFormat, setDateFormat] = useState<DateFormat>("dmy");
+
+  // Load user's preferred date format from localStorage on mount
+  useEffect(() => {
+    const stored = localStorage.getItem("chronosheet-date-format") as DateFormat | null;
+    if (stored && ["iso", "dmy", "mdy", "short", "long"].includes(stored)) {
+      setDateFormat(stored);
+    }
+  }, []);
+
+  // Update format and persist the choice so it sticks across visits
+  const handleDateFormatChange = (newFormat: DateFormat) => {
+    setDateFormat(newFormat);
+    localStorage.setItem("chronosheet-date-format", newFormat);
+  };
 
   // ------ Undo / Redo history (like Ctrl+Z in Excel) ------
   // Each item in the stack is a snapshot of (editedData + modifiedCells)
@@ -634,13 +855,21 @@ function SpreadsheetView({
       } else if (isRedo) {
         event.preventDefault();
         performRedo();
+      } else if (event.key === "Escape" && selectedRows.size > 0) {
+        // Escape: clear row selection
+        event.preventDefault();
+        clearRowSelection();
+      } else if (event.key === "Delete" && selectedRows.size > 0) {
+        // Delete key: remove all selected rows
+        event.preventDefault();
+        deleteSelectedRows();
       }
     };
 
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [undoStack, redoStack, editedData, modifiedCells, viewingSnapshotId]);
+  }, [undoStack, redoStack, editedData, modifiedCells, viewingSnapshotId, selectedRows]);
 
   // ------ Editing handlers ------
   const startEditing = (row: number, col: number) => {
@@ -694,21 +923,113 @@ function SpreadsheetView({
 
   const cancelEdit = () => setEditingCell(null);
 
+  // Excel-style: while editing, these keys save AND move to the next cell.
+  // - Enter / Down arrow → save + move down
+  // - Shift+Enter / Up arrow → save + move up
+  // - Tab / Right arrow → save + move right
+  // - Shift+Tab / Left arrow → save + move left
+  // - Escape → cancel without saving
   const handleInputKey = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      saveEdit();
-    } else if (event.key === "Escape") {
-      event.preventDefault();
-      cancelEdit();
+    if (!editingCell) return;
+
+    const { row, col } = editingCell;
+    const maxRow = editedData.length - 1;
+    const maxCol = (editedData[0]?.length ?? 1) - 1;
+
+    let direction: "down" | "up" | "right" | "left" | null = null;
+
+    switch (event.key) {
+      case "Enter":
+        direction = event.shiftKey ? "up" : "down";
+        break;
+      case "Tab":
+        direction = event.shiftKey ? "left" : "right";
+        break;
+      case "ArrowDown":
+        direction = "down";
+        break;
+      case "ArrowUp":
+        direction = "up";
+        break;
+      case "ArrowRight":
+        direction = "right";
+        break;
+      case "ArrowLeft":
+        direction = "left";
+        break;
+      case "Escape":
+        event.preventDefault();
+        cancelEdit();
+        return;
+      default:
+        return; // Let normal typing happen
     }
+
+    event.preventDefault();
+    saveEdit();
+
+    // Compute the next cell's position
+    let newRow = row;
+    let newCol = col;
+    switch (direction) {
+      case "down":
+        newRow = Math.min(maxRow, row + 1);
+        break;
+      case "up":
+        newRow = Math.max(0, row - 1);
+        break;
+      case "right":
+        newCol = Math.min(maxCol, col + 1);
+        break;
+      case "left":
+        newCol = Math.max(0, col - 1);
+        break;
+    }
+
+    setLastActive({ row: newRow, col: newCol });
   };
 
   const discardAllChanges = () => {
-    setEditedData(data.data.map((row) => [...row]));
+    setEditedData(activeSheet.data.map((row) => [...row]));
     setModifiedCells(new Set());
     setEditingCell(null);
     setLastActive(null);
+  };
+
+  // ------ Switch between sheets (preserves edits per sheet) ------
+  const switchToSheet = (newIndex: number) => {
+    if (newIndex === activeSheetIndex) return;
+    const currentSheetName = activeSheet.name;
+    const newSheet = availableSheets[newIndex];
+    if (!newSheet) return;
+
+    // Save the current sheet's edits into the cache
+    setSheetEditsCache((prev) => ({
+      ...prev,
+      [currentSheetName]: editedData.map((row) => [...row]),
+    }));
+    setSheetModifiedCache((prev) => ({
+      ...prev,
+      [currentSheetName]: new Set(modifiedCells),
+    }));
+
+    // Switch active sheet index
+    setActiveSheetIndex(newIndex);
+
+    // Load the new sheet's data: either from cache (if user has edited it) or fresh
+    const cachedEdits = sheetEditsCache[newSheet.name];
+    const cachedModified = sheetModifiedCache[newSheet.name];
+    setEditedData(cachedEdits ?? newSheet.data.map((row) => [...row]));
+    setModifiedCells(cachedModified ?? new Set());
+
+    // Reset per-sheet UI state
+    setEditingCell(null);
+    setLastActive(null);
+    setUndoStack([]);
+    setRedoStack([]);
+    setSortColumn(null);
+    setSortDirection("asc");
+    setPreSortOrder(null);
   };
 
   // ============================================
@@ -782,6 +1103,126 @@ function SpreadsheetView({
     setLastActive(null);
   };
 
+  // ------ Multi-row selection handlers ------
+
+  // Handle mousedown on a row number — starts drag selection too
+  const handleRowNumberMouseDown = (rowIndex: number, event: React.MouseEvent) => {
+    if (isReadOnly) return;
+
+    if (event.shiftKey && lastClickedRowForRange !== null) {
+      // Range selection from anchor
+      const start = Math.min(lastClickedRowForRange, rowIndex);
+      const end = Math.max(lastClickedRowForRange, rowIndex);
+      const newSelection = new Set(selectedRows);
+      for (let i = start; i <= end; i++) {
+        newSelection.add(i);
+      }
+      setSelectedRows(newSelection);
+    } else if (event.ctrlKey || event.metaKey) {
+      // Toggle individual row
+      const newSelection = new Set(selectedRows);
+      if (newSelection.has(rowIndex)) {
+        newSelection.delete(rowIndex);
+      } else {
+        newSelection.add(rowIndex);
+      }
+      setSelectedRows(newSelection);
+      setLastClickedRowForRange(rowIndex);
+    } else {
+      // Plain click — select just this row AND start drag-select
+      setSelectedRows(new Set([rowIndex]));
+      setLastClickedRowForRange(rowIndex);
+      setIsDragSelecting(true);
+      setDragStartRow(rowIndex);
+    }
+  };
+
+  // Handle mouse entering a row number while dragging — extend range
+  const handleRowNumberMouseEnter = (rowIndex: number) => {
+    if (!isDragSelecting || dragStartRow === null) return;
+    const start = Math.min(dragStartRow, rowIndex);
+    const end = Math.max(dragStartRow, rowIndex);
+    const newSelection = new Set<number>();
+    for (let i = start; i <= end; i++) {
+      newSelection.add(i);
+    }
+    setSelectedRows(newSelection);
+  };
+
+  // Global mouseup handler — stops drag selection wherever it ends
+  useEffect(() => {
+    const handleMouseUp = () => {
+      if (isDragSelecting) {
+        setIsDragSelecting(false);
+        setDragStartRow(null);
+      }
+    };
+    document.addEventListener("mouseup", handleMouseUp);
+    return () => document.removeEventListener("mouseup", handleMouseUp);
+  }, [isDragSelecting]);
+
+  // Compute live stats for the selected rows (Sum, Average, Count of numeric cells)
+  const selectionStats = useMemo(() => {
+    if (selectedRows.size === 0) return null;
+    let sum = 0;
+    let numericCount = 0;
+    let cellCount = 0;
+    for (const rowIdx of selectedRows) {
+      const row = editedData[rowIdx];
+      if (!row) continue;
+      for (const cell of row) {
+        if (cell === null || cell === undefined || String(cell).trim() === "") continue;
+        cellCount++;
+        const num = parseFloat(String(cell));
+        if (!isNaN(num) && isFinite(num)) {
+          sum += num;
+          numericCount++;
+        }
+      }
+    }
+    return {
+      rows: selectedRows.size,
+      cells: cellCount,
+      sum,
+      average: numericCount > 0 ? sum / numericCount : 0,
+      numericCount,
+    };
+  }, [selectedRows, editedData]);
+
+  // Delete all currently selected rows in one undoable action
+  const deleteSelectedRows = () => {
+    if (selectedRows.size === 0) return;
+    captureSnapshot();
+
+    const cleaned = editedData.filter((_, index) => !selectedRows.has(index));
+    setEditedData(cleaned);
+    setModifiedCells(new Set()); // Indices shifted
+    setEditingCell(null);
+    setLastActive(null);
+
+    const count = selectedRows.size;
+    setSelectedRows(new Set());
+    setLastClickedRowForRange(null);
+
+    setToast({
+      kind: "success",
+      text: `Deleted ${count} row${count > 1 ? "s" : ""}. Press Ctrl+Z to undo.`,
+    });
+    setTimeout(() => setToast(null), 4000);
+  };
+
+  // Clear all selected rows
+  const clearRowSelection = () => {
+    setSelectedRows(new Set());
+    setLastClickedRowForRange(null);
+  };
+
+  // Select all rows
+  const selectAllRows = () => {
+    const allIndices = editedData.map((_, idx) => idx);
+    setSelectedRows(new Set(allIndices));
+  };
+
   // Helper: does this cell match the current search query?
   const cellMatchesSearch = (cellValue: CellValue): boolean => {
     if (!searchQuery.trim()) return false;
@@ -807,7 +1248,6 @@ function SpreadsheetView({
     const emptyRowCount = editedData.filter(isEmptyRow).length;
 
     if (emptyRowCount === 0) {
-      // Nothing to clean — give friendly feedback
       setToast({
         kind: "success",
         text: "Spreadsheet is already clean — no empty rows found!",
@@ -1073,6 +1513,198 @@ function SpreadsheetView({
     }
   };
 
+  // ------ Wave 3: Chat with Spreadsheet handler ------
+  // Sends user question + spreadsheet data + chat history to backend.
+  // Gets back AI's answer and adds it to the chat thread.
+  // Accepts an optional override text (used by voice queries).
+  const handleSendChatMessage = async (overrideText?: string) => {
+    const question = (overrideText ?? chatInput).trim();
+    if (!question || chatThinking) return;
+
+    // Optimistically add user message to the thread
+    const newUserMsg: ChatMessage = { role: "user", content: question };
+    const updatedMessages = [...chatMessages, newUserMsg];
+    setChatMessages(updatedMessages);
+    setChatInput("");
+    setChatThinking(true);
+
+    try {
+      const response = await fetch(`${BACKEND_URL}/chat-with-spreadsheet`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          filename: data.filename,
+          sheet_name: data.sheet_name,
+          data: viewingSnapshotData ?? editedData,
+          question: question,
+          history: chatMessages,  // Send the conversation context
+        }),
+      });
+
+      if (!response.ok) {
+        const errorBody = await response.json().catch(() => ({}));
+        const detail =
+          typeof errorBody?.detail === "string"
+            ? errorBody.detail
+            : "Chat failed.";
+        throw new Error(detail);
+      }
+
+      const result = await response.json();
+      const aiMsg: ChatMessage = { role: "assistant", content: result.answer };
+      setChatMessages((prev) => [...prev, aiMsg]);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Could not reach AI.";
+      const errorMsg: ChatMessage = {
+        role: "assistant",
+        content: `⚠️ Sorry, I had trouble: ${message}`,
+      };
+      setChatMessages((prev) => [...prev, errorMsg]);
+    } finally {
+      setChatThinking(false);
+    }
+  };
+
+  const clearChat = () => {
+    setChatMessages([]);
+    setChatInput("");
+  };
+
+  // ------ Wave 3: Voice query — Web Speech API setup ------
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    // Browsers expose this as either `SpeechRecognition` or `webkitSpeechRecognition`.
+    const SpeechRecognitionAPI =
+      (window as unknown as { SpeechRecognition?: new () => unknown }).SpeechRecognition ||
+      (window as unknown as { webkitSpeechRecognition?: new () => unknown }).webkitSpeechRecognition;
+
+    if (!SpeechRecognitionAPI) {
+      setVoiceSupported(false);
+      return;
+    }
+    setVoiceSupported(true);
+
+    type Recognition = {
+      continuous: boolean;
+      interimResults: boolean;
+      lang: string;
+      onresult: (event: { results: { 0: { 0: { transcript: string } } }[] }) => void;
+      onerror: (event: { error: string }) => void;
+      onend: () => void;
+      start: () => void;
+      stop: () => void;
+    };
+
+    const recognition = new SpeechRecognitionAPI() as Recognition;
+    recognition.continuous = false; // Stop listening once user finishes speaking
+    recognition.interimResults = false; // Only return final result
+    recognition.lang = "en-IN"; // English India (you can change to "en-US", "hi-IN", etc.)
+
+    recognition.onresult = (event) => {
+      const transcript = event.results[0][0].transcript;
+      setChatInput(transcript);
+      setIsListening(false);
+      // Auto-send the transcribed text after a brief moment
+      setTimeout(() => {
+        handleSendChatMessage(transcript);
+      }, 300);
+    };
+
+    recognition.onerror = (event) => {
+      setIsListening(false);
+      const friendlyError =
+        event.error === "not-allowed"
+          ? "Microphone permission denied. Allow access in browser settings."
+          : event.error === "no-speech"
+            ? "No speech detected. Try speaking louder."
+            : `Voice error: ${event.error}`;
+      setToast({ kind: "error", text: friendlyError });
+      setTimeout(() => setToast(null), 4000);
+    };
+
+    recognition.onend = () => {
+      setIsListening(false);
+    };
+
+    speechRecognitionRef.current = recognition;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Start listening for voice input
+  const startVoiceQuery = () => {
+    if (!voiceSupported || !speechRecognitionRef.current) {
+      setToast({
+        kind: "error",
+        text: "Voice input not supported in this browser. Try Chrome or Edge.",
+      });
+      setTimeout(() => setToast(null), 4000);
+      return;
+    }
+    setChatInput("");
+    setIsListening(true);
+    try {
+      (speechRecognitionRef.current as { start: () => void }).start();
+    } catch {
+      // Already started — ignore
+      setIsListening(false);
+    }
+  };
+
+  // Manually stop listening (if user clicks the mic again)
+  const stopVoiceQuery = () => {
+    if (speechRecognitionRef.current) {
+      try {
+        (speechRecognitionRef.current as { stop: () => void }).stop();
+      } catch {
+        // Ignore
+      }
+    }
+    setIsListening(false);
+  };
+
+  // ------ Wave 3: Generate Chart handler ------
+  // Asks the AI to pick the best chart type and columns for visualization.
+  const handleGenerateChart = async () => {
+    setGeneratingChart(true);
+    setShowCharts(true);
+    setChartSuggestion(null);
+    setChartTypeOverride(null);
+    setToast(null);
+
+    try {
+      const response = await fetch(`${BACKEND_URL}/suggest-chart`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          filename: data.filename,
+          sheet_name: data.sheet_name,
+          data: viewingSnapshotData ?? editedData,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorBody = await response.json().catch(() => ({}));
+        const detail =
+          typeof errorBody?.detail === "string"
+            ? errorBody.detail
+            : "Could not generate chart.";
+        throw new Error(detail);
+      }
+
+      const result = await response.json();
+      setChartSuggestion(result.suggestion);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Chart generation failed.";
+      setToast({ kind: "error", text: message });
+      setTimeout(() => setToast(null), 4000);
+      setShowCharts(false);
+    } finally {
+      setGeneratingChart(false);
+    }
+  };
+
   // ------ Wave 2: AI Compare handler ------
   // Sends the past snapshot data + current edited data to the backend,
   // which uses Groq to produce a story of what changed.
@@ -1310,6 +1942,36 @@ function SpreadsheetView({
                 </button>
               </>
             )}
+            {/* CHARTS BUTTON — opens chart generator panel */}
+            <button
+              onClick={handleGenerateChart}
+              disabled={generatingChart}
+              className="group flex items-center gap-2 rounded-lg border border-amber-500/40 bg-gradient-to-r from-amber-500/15 to-purple-500/10 px-4 py-2 text-sm font-semibold text-amber-200 transition-colors hover:from-amber-500/25 hover:to-purple-500/15 hover:text-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
+              title="Auto-generate a chart from your data with AI"
+            >
+              {generatingChart ? (
+                <>
+                  <span className="h-3 w-3 animate-spin rounded-full border-2 border-amber-200 border-t-transparent" />
+                  <span>Building...</span>
+                </>
+              ) : (
+                <>
+                  <span>📊</span>
+                  <span>Charts</span>
+                </>
+              )}
+            </button>
+
+            {/* CHAT WITH SPREADSHEET BUTTON — opens chat panel */}
+            <button
+              onClick={() => setShowChat(true)}
+              className="group flex items-center gap-2 rounded-lg border border-cyan-500/40 bg-gradient-to-r from-cyan-500/15 to-purple-500/10 px-4 py-2 text-sm font-semibold text-cyan-200 transition-colors hover:from-cyan-500/25 hover:to-purple-500/15 hover:text-cyan-100"
+              title="Ask AI questions about your spreadsheet in plain English"
+            >
+              <span>💬</span>
+              <span>Chat</span>
+            </button>
+
             {/* ANALYZE WITH AI BUTTON — opens insights panel */}
             <button
               onClick={handleAnalyzeWithAI}
@@ -1442,213 +2104,302 @@ function SpreadsheetView({
 
       <main className="mx-auto max-w-7xl px-8 py-8">
 
-        {/* FILE SUMMARY CARD */}
-        <div className="mb-6 rounded-xl border border-slate-800 bg-slate-900 p-6">
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <div>
-              <h1 className="text-2xl font-bold tracking-tight">{data.filename}</h1>
-              <p className="mt-1 text-sm text-slate-400">
-                Sheet: <span className="text-slate-200">{data.sheet_name}</span>
-              </p>
-            </div>
-            <div className="flex flex-wrap gap-4">
-              <Stat label="Rows" value={data.row_count} />
-              <Stat label="Columns" value={data.column_count} />
-              <Stat label="Edits" value={changeCount} highlight={changeCount > 0} />
-              <Stat label="Snapshots" value={savedCount} highlight={savedCount > 0} />
-            </div>
+        {/* SHEET TABS — only show if there's more than one sheet */}
+        {availableSheets.length > 1 && (
+          <div className="mb-4 flex flex-wrap items-center gap-1 rounded-xl border border-slate-800 bg-slate-900 p-1.5">
+            <span className="px-2 text-xs font-bold uppercase tracking-wider text-slate-500">
+              Sheets:
+            </span>
+            {availableSheets.map((sheet, idx) => {
+              const isActive = idx === activeSheetIndex;
+              const hasEdits = sheetEditsCache[sheet.name] !== undefined || (isActive && modifiedCells.size > 0);
+              return (
+                <button
+                  key={sheet.name}
+                  onClick={() => switchToSheet(idx)}
+                  className={`flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium transition-colors ${
+                    isActive
+                      ? "border-emerald-500/60 bg-emerald-500/15 text-emerald-200"
+                      : "border-slate-700 bg-slate-950 text-slate-300 hover:border-emerald-500/40 hover:text-emerald-300"
+                  }`}
+                  title={`${sheet.name} — ${sheet.row_count} rows, ${sheet.column_count} columns`}
+                >
+                  <span>📑</span>
+                  <span>{sheet.name}</span>
+                  {hasEdits && (
+                    <span className="ml-1 h-1.5 w-1.5 rounded-full bg-emerald-400" title="Has unsaved edits" />
+                  )}
+                </button>
+              );
+            })}
           </div>
-          <div className="mt-4 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-300">
-            ✓ {data.message} — <span className="text-emerald-200/80">Click any cell to edit. Press Enter to save, Escape to cancel.</span>
+        )}
+
+        {/* COMPACT FILE INFO STRIP — single-row layout */}
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-900/60 px-4 py-2.5">
+          {/* Left: filename + sheet name in a compact form */}
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <span className="text-lg">📄</span>
+            <span className="font-semibold text-slate-100">{data.filename}</span>
+            <span className="text-slate-600">·</span>
+            <span className="text-slate-400">{activeSheet.name}</span>
+          </div>
+
+          {/* Right: stats as small inline pills */}
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <CompactStat label="Rows" value={data.row_count} />
+            <CompactStat label="Cols" value={data.column_count} />
+            <CompactStat label="Edits" value={changeCount} highlight={changeCount > 0} />
+            <CompactStat label="Snapshots" value={savedCount} highlight={savedCount > 0} />
           </div>
         </div>
 
-        {/* EXCEL-STYLE TOOLBAR — Wave 1 */}
+        {/* EXCEL-STYLE GROUPED TOOLBAR — Wave 1 (sectioned ribbon style) */}
         {!isReadOnly && (
-          <div className="mb-4 rounded-xl border border-slate-800 bg-slate-900 p-3">
-            <div className="flex flex-wrap items-center gap-2">
+          <div className="mb-4 rounded-xl border border-slate-800 bg-gradient-to-br from-slate-900 to-slate-900/80 p-2.5 shadow-lg">
+            <div className="flex flex-wrap items-stretch gap-2">
 
-              {/* Label */}
-              <span className="mr-2 text-xs font-bold uppercase tracking-wider text-slate-500">
-                Toolbar
-              </span>
-
-              {/* ----- UNDO / REDO ----- */}
-              <ToolbarButton
-                onClick={performUndo}
-                icon="↶"
-                label="Undo"
-                disabled={undoStack.length === 0}
-                title={
-                  undoStack.length > 0
-                    ? `Undo last change (Ctrl+Z) — ${undoStack.length} action${undoStack.length > 1 ? "s" : ""} available`
-                    : "Nothing to undo"
-                }
-              />
-              <ToolbarButton
-                onClick={performRedo}
-                icon="↷"
-                label="Redo"
-                disabled={redoStack.length === 0}
-                title={
-                  redoStack.length > 0
-                    ? `Redo undone change (Ctrl+Y) — ${redoStack.length} action${redoStack.length > 1 ? "s" : ""} available`
-                    : "Nothing to redo"
-                }
-              />
-
-              {/* Divider */}
-              <span className="mx-2 h-6 w-px bg-slate-700" />
-
-              {/* ----- ROW OPERATIONS ----- */}
-              <ToolbarButton
-                onClick={addRowAtEnd}
-                icon="➕"
-                label="Add Row"
-                title="Add a new empty row at the bottom"
-              />
-              <ToolbarButton
-                onClick={() => lastActive && insertRowAtPosition(lastActive.row)}
-                icon="⬆️"
-                label="Insert Row Above"
-                disabled={!lastActive}
-                title={lastActive ? `Insert row above row ${lastActive.row + 1}` : "Click a cell first"}
-              />
-              <ToolbarButton
-                onClick={() => lastActive && insertRowAtPosition(lastActive.row + 1)}
-                icon="⬇️"
-                label="Insert Row Below"
-                disabled={!lastActive}
-                title={lastActive ? `Insert row below row ${lastActive.row + 1}` : "Click a cell first"}
-              />
-              <ToolbarButton
-                onClick={() => lastActive && deleteRowAtPosition(lastActive.row)}
-                icon="❌"
-                label="Delete Row"
-                disabled={!lastActive}
-                danger
-                title={lastActive ? `Delete row ${lastActive.row + 1}` : "Click a cell first"}
-              />
-
-              {/* Divider */}
-              <span className="mx-2 h-6 w-px bg-slate-700" />
-
-              {/* ----- COLUMN OPERATIONS ----- */}
-              <ToolbarButton
-                onClick={addColumnAtEnd}
-                icon="➕"
-                label="Add Column"
-                title="Add a new empty column at the right"
-              />
-              <ToolbarButton
-                onClick={() => lastActive && insertColumnAtPosition(lastActive.col)}
-                icon="⬅️"
-                label="Insert Col Left"
-                disabled={!lastActive}
-                title={lastActive ? `Insert column left of column ${columnLetter(lastActive.col)}` : "Click a cell first"}
-              />
-              <ToolbarButton
-                onClick={() => lastActive && insertColumnAtPosition(lastActive.col + 1)}
-                icon="➡️"
-                label="Insert Col Right"
-                disabled={!lastActive}
-                title={lastActive ? `Insert column right of column ${columnLetter(lastActive.col)}` : "Click a cell first"}
-              />
-              <ToolbarButton
-                onClick={() => lastActive && deleteColumnAtPosition(lastActive.col)}
-                icon="❌"
-                label="Delete Column"
-                disabled={!lastActive}
-                danger
-                title={lastActive ? `Delete column ${columnLetter(lastActive.col)}` : "Click a cell first"}
-              />
-
-              {/* Divider */}
-              <span className="mx-2 h-6 w-px bg-slate-700" />
-
-              {/* ----- SEARCH BOX ----- */}
-              <div className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5">
-                <span className="text-slate-500">🔎</span>
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(event) => setSearchQuery(event.target.value)}
-                  placeholder="Search cells..."
-                  className="w-40 bg-transparent text-sm text-slate-200 placeholder:text-slate-600 focus:outline-none"
+              {/* ========== HISTORY GROUP ========== */}
+              <ToolbarGroup label="History" accent="slate">
+                <ToolbarButton
+                  onClick={performUndo}
+                  icon="↶"
+                  label="Undo"
+                  disabled={undoStack.length === 0}
+                  title={undoStack.length > 0 ? `Undo (Ctrl+Z) — ${undoStack.length} action${undoStack.length > 1 ? "s" : ""}` : "Nothing to undo"}
                 />
-                {searchQuery && (
-                  <button
-                    onClick={() => setSearchQuery("")}
-                    className="text-xs text-slate-500 hover:text-slate-300"
-                    title="Clear search"
+                <ToolbarButton
+                  onClick={performRedo}
+                  icon="↷"
+                  label="Redo"
+                  disabled={redoStack.length === 0}
+                  title={redoStack.length > 0 ? `Redo (Ctrl+Y) — ${redoStack.length} action${redoStack.length > 1 ? "s" : ""}` : "Nothing to redo"}
+                />
+              </ToolbarGroup>
+
+              {/* ========== ROWS GROUP ========== */}
+              <ToolbarGroup label="Rows" accent="emerald">
+                <ToolbarButton onClick={addRowAtEnd} icon="➕" label="Add" title="Add a new empty row at the bottom" />
+                <ToolbarButton
+                  onClick={() => lastActive && insertRowAtPosition(lastActive.row)}
+                  icon="⬆️"
+                  label="Above"
+                  disabled={!lastActive}
+                  title={lastActive ? `Insert row above row ${lastActive.row + 1}` : "Click a cell first"}
+                />
+                <ToolbarButton
+                  onClick={() => lastActive && insertRowAtPosition(lastActive.row + 1)}
+                  icon="⬇️"
+                  label="Below"
+                  disabled={!lastActive}
+                  title={lastActive ? `Insert row below row ${lastActive.row + 1}` : "Click a cell first"}
+                />
+                <ToolbarButton
+                  onClick={() => lastActive && deleteRowAtPosition(lastActive.row)}
+                  icon="❌"
+                  label="Delete"
+                  disabled={!lastActive}
+                  danger
+                  title={lastActive ? `Delete row ${lastActive.row + 1}` : "Click a cell first"}
+                />
+              </ToolbarGroup>
+
+              {/* ========== COLUMNS GROUP ========== */}
+              <ToolbarGroup label="Columns" accent="cyan">
+                <ToolbarButton onClick={addColumnAtEnd} icon="➕" label="Add" title="Add a new empty column at the right" />
+                <ToolbarButton
+                  onClick={() => lastActive && insertColumnAtPosition(lastActive.col)}
+                  icon="⬅️"
+                  label="Left"
+                  disabled={!lastActive}
+                  title={lastActive ? `Insert column left of ${columnLetter(lastActive.col)}` : "Click a cell first"}
+                />
+                <ToolbarButton
+                  onClick={() => lastActive && insertColumnAtPosition(lastActive.col + 1)}
+                  icon="➡️"
+                  label="Right"
+                  disabled={!lastActive}
+                  title={lastActive ? `Insert column right of ${columnLetter(lastActive.col)}` : "Click a cell first"}
+                />
+                <ToolbarButton
+                  onClick={() => lastActive && deleteColumnAtPosition(lastActive.col)}
+                  icon="❌"
+                  label="Delete"
+                  disabled={!lastActive}
+                  danger
+                  title={lastActive ? `Delete column ${columnLetter(lastActive.col)}` : "Click a cell first"}
+                />
+              </ToolbarGroup>
+
+              {/* ========== FIND GROUP ========== */}
+              <ToolbarGroup label="Find" accent="amber">
+                <div className="flex items-center gap-2 rounded-md border border-slate-700 bg-slate-950 px-3 py-1.5">
+                  <span className="text-slate-500">🔎</span>
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(event) => setSearchQuery(event.target.value)}
+                    placeholder="Search..."
+                    className="w-32 bg-transparent text-xs text-slate-200 placeholder:text-slate-600 focus:outline-none"
+                  />
+                  {searchQuery && (
+                    <button onClick={() => setSearchQuery("")} className="text-xs text-slate-500 hover:text-slate-300" title="Clear search">✕</button>
+                  )}
+                </div>
+                <ToolbarButton onClick={smartCleanup} icon="🧹" label="Cleanup" title="Remove ALL empty rows (Ctrl+Z to undo)" />
+              </ToolbarGroup>
+
+              {/* ========== VIEW GROUP ========== */}
+              <ToolbarGroup label="View" accent="purple">
+                <div className="flex items-center gap-1.5 rounded-md border border-slate-700 bg-slate-950 px-2 py-1.5">
+                  <span className="text-xs text-slate-500">📅</span>
+                  <select
+                    value={dateFormat}
+                    onChange={(event) => handleDateFormatChange(event.target.value as DateFormat)}
+                    className="bg-transparent text-xs font-medium text-slate-200 focus:outline-none"
+                    title="Date format"
                   >
-                    ✕
-                  </button>
-                )}
-              </div>
-
-              {/* Divider */}
-              <span className="mx-2 h-6 w-px bg-slate-700" />
-
-              {/* ----- SMART CLEANUP ----- */}
-              <ToolbarButton
-                onClick={smartCleanup}
-                icon="🧹"
-                label="Cleanup"
-                title="Remove ALL empty rows in one click (Ctrl+Z to undo)"
-              />
-
-              {/* ----- DATE FORMAT PICKER ----- */}
-              <div className="flex items-center gap-1.5 rounded-md border border-slate-700 bg-slate-950 px-2 py-1.5">
-                <span className="text-xs text-slate-500">📅</span>
-                <select
-                  value={dateFormat}
-                  onChange={(event) => setDateFormat(event.target.value as DateFormat)}
-                  className="bg-transparent text-xs font-medium text-slate-200 focus:outline-none"
-                  title="Choose how dates are displayed"
-                >
-                  <option value="iso">ISO (2026-01-20)</option>
-                  <option value="dmy">DD/MM/YYYY (20/01/2026)</option>
-                  <option value="mdy">MM/DD/YYYY (01/20/2026)</option>
-                  <option value="short">Short (20 Jan 2026)</option>
-                  <option value="long">Long (January 20, 2026)</option>
-                </select>
-              </div>
-
-              {/* ----- STATISTICS TOGGLE ----- */}
-              <ToolbarButton
-                onClick={() => setShowStats((open) => !open)}
-                icon="📊"
-                label={showStats ? "Hide Stats" : "Show Stats"}
-                title="Toggle the statistics panel (Sum, Average, Min, Max per column)"
-              />
+                    <option value="dmy">DD/MM/YYYY</option>
+                    <option value="mdy">MM/DD/YYYY</option>
+                    <option value="iso">ISO</option>
+                    <option value="short">Short</option>
+                    <option value="long">Long</option>
+                  </select>
+                </div>
+                <div className="flex items-center gap-1.5 rounded-md border border-slate-700 bg-slate-950 px-2 py-1.5">
+                  <span className="text-xs text-slate-500">🔒</span>
+                  <select
+                    value={frozenRows}
+                    onChange={(event) => handleFreezeRowsChange(parseInt(event.target.value))}
+                    className="bg-transparent text-xs font-medium text-slate-200 focus:outline-none"
+                    title="Freeze top rows"
+                  >
+                    <option value={0}>No freeze</option>
+                    <option value={1}>1 row</option>
+                    <option value={2}>2 rows</option>
+                    <option value={3}>3 rows</option>
+                  </select>
+                </div>
+                <div className="flex items-center gap-1.5 rounded-md border border-slate-700 bg-slate-950 px-2 py-1.5">
+                  <span className="text-xs text-slate-500">📌</span>
+                  <select
+                    value={frozenColumns}
+                    onChange={(event) => handleFreezeColumnsChange(parseInt(event.target.value))}
+                    className="bg-transparent text-xs font-medium text-slate-200 focus:outline-none"
+                    title="Freeze first columns"
+                  >
+                    <option value={0}>No freeze</option>
+                    <option value={1}>1 col</option>
+                    <option value={2}>2 cols</option>
+                    <option value={3}>3 cols</option>
+                  </select>
+                </div>
+                <ToolbarButton
+                  onClick={() => setShowStats((open) => !open)}
+                  icon="📊"
+                  label={showStats ? "Hide" : "Stats"}
+                  title="Toggle the statistics panel"
+                />
+              </ToolbarGroup>
 
               {/* ----- ACTIVE POSITION INDICATOR ----- */}
               {lastActive && (
-                <span className="ml-auto rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-300">
-                  Active: {columnLetter(lastActive.col)}{lastActive.row + 1}
-                </span>
+                <div className="ml-auto self-center">
+                  <span className="rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs font-bold text-emerald-300">
+                    📍 {columnLetter(lastActive.col)}{lastActive.row + 1}
+                  </span>
+                </div>
               )}
 
             </div>
           </div>
         )}
 
-        {/* THE EDITABLE SPREADSHEET TABLE */}
-        <div className="overflow-hidden rounded-xl border border-slate-800 bg-slate-900">
-          <div className="overflow-x-auto">
+        {/* MULTI-ROW SELECTION ACTION BAR — appears when rows are selected */}
+        {selectedRows.size > 0 && !isReadOnly && (
+          <div className="mb-3 rounded-xl border border-emerald-500/40 bg-emerald-500/10 shadow-lg">
+            {/* Top row: selection count + actions */}
+            <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5">
+              <div className="flex items-center gap-3">
+                <span className="text-lg">✅</span>
+                <span className="text-sm font-semibold text-emerald-200">
+                  {selectedRows.size} row{selectedRows.size > 1 ? "s" : ""} selected
+                </span>
+                <span className="text-xs text-emerald-400">
+                  Press Escape to clear · Delete key to remove
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={selectAllRows}
+                  className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-xs font-medium text-emerald-200 hover:bg-emerald-500/20"
+                  title="Select all rows"
+                >
+                  Select All
+                </button>
+                <button
+                  onClick={deleteSelectedRows}
+                  className="rounded-lg border border-red-500/40 bg-red-500/15 px-3 py-1.5 text-xs font-semibold text-red-200 hover:bg-red-500/25"
+                  title="Delete all selected rows"
+                >
+                  🗑️ Delete {selectedRows.size} row{selectedRows.size > 1 ? "s" : ""}
+                </button>
+                <button
+                  onClick={clearRowSelection}
+                  className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-800"
+                  title="Clear selection (Escape)"
+                >
+                  ✕ Clear
+                </button>
+              </div>
+            </div>
+
+            {/* Bottom row: live stats (like Excel's status bar at the bottom) */}
+            {selectionStats && selectionStats.numericCount > 0 && (
+              <div className="flex flex-wrap items-center gap-x-6 gap-y-2 border-t border-emerald-500/20 bg-emerald-500/5 px-4 py-2 text-xs">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-emerald-400">📊</span>
+                  <span className="text-slate-400">Sum:</span>
+                  <span className="font-bold text-emerald-200">
+                    {selectionStats.sum.toLocaleString("en-US", { maximumFractionDigits: 2 })}
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-slate-400">Average:</span>
+                  <span className="font-bold text-emerald-200">
+                    {selectionStats.average.toLocaleString("en-US", { maximumFractionDigits: 2 })}
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-slate-400">Count:</span>
+                  <span className="font-bold text-emerald-200">{selectionStats.cells}</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-slate-400">Numbers:</span>
+                  <span className="font-bold text-emerald-200">{selectionStats.numericCount}</span>
+                </div>
+                <div className="ml-auto text-slate-500">
+                  Just like Excel&apos;s status bar 📈
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* THE EDITABLE SPREADSHEET TABLE — sticky-friendly scroll container */}
+        <div className="rounded-xl border border-slate-800 bg-slate-900">
+          <div className="max-h-[70vh] overflow-auto rounded-xl">
             <table className="min-w-full text-sm">
 
-              {/* Column letter headers (like Excel: A, B, C, D ...) — click to sort */}
-              <thead className="border-b border-slate-800 bg-slate-900/90">
+              {/* Column letter headers (like Excel: A, B, C, D ...) — click to sort, always sticky */}
+              <thead className="sticky top-0 z-30 border-b border-slate-800 bg-slate-900/95 backdrop-blur">
                 <tr>
-                  <th className="sticky left-0 z-10 w-12 bg-slate-900/95 px-3 py-3 text-center text-xs font-semibold text-slate-500">
+                  <th className="sticky left-0 z-40 w-12 bg-slate-900/95 px-3 py-3 text-center text-xs font-semibold text-slate-500">
                     #
                   </th>
                   {Array.from({ length: columnCount }, (_, colIndex) => {
                     const isSorted = sortColumn === colIndex;
                     const arrow = isSorted ? (sortDirection === "asc" ? " ▲" : " ▼") : "";
-                    // Helpful tooltip explains the 3-click cycle
                     const tooltip = isReadOnly
                       ? ""
                       : isSorted && sortDirection === "asc"
@@ -1656,11 +2407,18 @@ function SpreadsheetView({
                         : isSorted && sortDirection === "desc"
                           ? `Click again to restore original order (unsort)`
                           : `Click to sort by column ${columnLetter(colIndex)} ascending ▲`;
+                    // Sticky positioning for frozen column letters
+                    const isFrozenColHeader = colIndex < frozenColumns;
+                    const colHeaderLeft = 48 + colIndex * 120;
+                    const colHeaderStyle = isFrozenColHeader
+                      ? { position: "sticky" as const, left: `${colHeaderLeft}px`, zIndex: 35 }
+                      : undefined;
                     return (
                       <th
                         key={colIndex}
                         onClick={() => !isReadOnly && sortByColumn(colIndex)}
-                        className={`min-w-[120px] px-4 py-3 text-left text-xs font-bold uppercase tracking-wider transition-colors ${
+                        style={colHeaderStyle}
+                        className={`min-w-[120px] px-4 py-3 text-left text-xs font-bold uppercase tracking-wider transition-colors ${isFrozenColHeader ? "bg-slate-900/95" : ""} ${
                           isReadOnly
                             ? "text-slate-400"
                             : isSorted
@@ -1678,11 +2436,36 @@ function SpreadsheetView({
 
               {/* Editable rows (or read-only when time-traveling) */}
               <tbody className="divide-y divide-slate-800/80">
-                {displayedData.map((row, rowIndex) => (
-                  <tr key={rowIndex} className="group/row">
+                {displayedData.map((row, rowIndex) => {
+                  // Determine if this row should freeze (stick to top while scrolling)
+                  const isFrozenRow = rowIndex < frozenRows;
+                  // Approximate row height (matches our py-3 padding + line height)
+                  const FROZEN_ROW_HEIGHT = 49;
+                  const HEADER_HEIGHT = 45; // height of the column letter thead
+                  const rowStickyTop = HEADER_HEIGHT + rowIndex * FROZEN_ROW_HEIGHT;
 
-                    {/* Row number column (not editable) */}
-                    <td className="sticky left-0 z-10 w-12 bg-slate-900/95 px-3 py-3 text-center text-xs font-medium text-slate-500 group-hover/row:bg-slate-800/60">
+                  // Style for sticking the entire row (applied per cell for reliability)
+                  const rowStickyStyle: React.CSSProperties | undefined = isFrozenRow
+                    ? { position: "sticky", top: `${rowStickyTop}px`, zIndex: 20 }
+                    : undefined;
+
+                  const isRowSelected = selectedRows.has(rowIndex);
+
+                  return (
+                  <tr key={rowIndex} className={`group/row ${isRowSelected ? "bg-emerald-500/10" : ""}`}>
+
+                    {/* Row number column — sticky LEFT always; click+drag for multi-row selection */}
+                    <td
+                      onMouseDown={(event) => handleRowNumberMouseDown(rowIndex, event)}
+                      onMouseEnter={() => handleRowNumberMouseEnter(rowIndex)}
+                      style={isFrozenRow ? { position: "sticky", left: 0, top: `${rowStickyTop}px`, zIndex: 30 } : undefined}
+                      className={`${isFrozenRow ? "" : "sticky left-0 z-10"} w-12 ${
+                        isRowSelected
+                          ? "bg-emerald-500/30 text-emerald-200"
+                          : "bg-slate-900 text-slate-500 group-hover/row:bg-slate-800/60"
+                      } cursor-pointer select-none px-3 py-3 text-center text-xs font-bold transition-colors`}
+                      title="Click & drag to select | Shift+Click for range | Ctrl+Click to toggle"
+                    >
                       {rowIndex + 1}
                     </td>
 
@@ -1707,12 +2490,38 @@ function SpreadsheetView({
                         ? `Now: ${currentNow || "(empty)"}`
                         : undefined;
 
+                      // Frozen column — stick to the left when scrolling right
+                      const isFrozenCol = colIndex < frozenColumns;
+                      const FROZEN_COL_WIDTH = 120;
+                      const ROW_NUM_COL_WIDTH = 48;
+                      const colStickyLeft = ROW_NUM_COL_WIDTH + colIndex * FROZEN_COL_WIDTH;
+
+                      // Build cell sticky style: row-freeze, col-freeze, or both
+                      let cellStickyStyle: React.CSSProperties | undefined;
+                      if (isFrozenRow && isFrozenCol) {
+                        cellStickyStyle = {
+                          position: "sticky",
+                          top: `${rowStickyTop}px`,
+                          left: `${colStickyLeft}px`,
+                          zIndex: 35,
+                        };
+                      } else if (isFrozenRow) {
+                        cellStickyStyle = rowStickyStyle;
+                      } else if (isFrozenCol) {
+                        cellStickyStyle = {
+                          position: "sticky",
+                          left: `${colStickyLeft}px`,
+                          zIndex: 15,
+                        };
+                      }
+
                       return (
                         <td
                           key={colIndex}
                           title={tooltip}
                           onClick={() => !isReadOnly && !isEditing && startEditing(rowIndex, colIndex)}
-                          className={`min-w-[120px] px-4 py-3 transition-colors ${
+                          style={cellStickyStyle}
+                          className={`min-w-[120px] px-4 py-3 transition-colors ${(isFrozenRow || isFrozenCol) ? "bg-slate-900" : ""} ${
                             isReadOnly
                               ? isDiffCell
                                 ? "cursor-default bg-yellow-500/15 text-yellow-100 ring-1 ring-inset ring-yellow-500/50"
@@ -1746,7 +2555,8 @@ function SpreadsheetView({
                     })}
 
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
 
             </table>
@@ -1808,16 +2618,300 @@ function SpreadsheetView({
           </div>
         )}
 
-        {/* HELP FOOTER */}
-        <p className="mt-6 text-center text-sm text-slate-500">
-          {isReadOnly
-            ? "You are time-traveling. Click 'Return to Current' to go back to editing mode."
-            : changeCount > 0
-              ? `${changeCount} cell${changeCount > 1 ? "s" : ""} modified. Click "Save Snapshot" to preserve this version.`
-              : "Click any cell to edit it. Changed cells will glow emerald."}
-        </p>
+        {/* HELP FOOTER — only shown in time-travel mode (other messages removed) */}
+        {isReadOnly && (
+          <p className="mt-6 text-center text-sm text-slate-500">
+            You are time-traveling. Click &apos;Return to Current&apos; to go back to editing mode.
+          </p>
+        )}
 
       </main>
+
+      {/* CHARTS PANEL — Wave 3 Feature 2 */}
+      {showCharts && (
+        <>
+          <div
+            className="fixed inset-0 z-40 bg-slate-950/75 backdrop-blur-sm"
+            onClick={() => !generatingChart && setShowCharts(false)}
+          />
+
+          <aside className="fixed left-1/2 top-1/2 z-50 flex max-h-[90vh] w-full max-w-4xl -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-amber-500/40 bg-slate-950 shadow-2xl">
+
+            <div className="flex items-center justify-between border-b border-slate-800 bg-gradient-to-r from-amber-500/10 to-purple-500/10 px-6 py-4">
+              <div className="flex items-center gap-3">
+                <span className="text-2xl">📊</span>
+                <div>
+                  <h2 className="text-lg font-bold tracking-tight">AI Chart Generator</h2>
+                  <p className="text-xs text-slate-400">
+                    {chartSuggestion ? chartSuggestion.title : "AI is picking the best chart..."}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => !generatingChart && setShowCharts(false)}
+                disabled={generatingChart}
+                className="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-slate-200 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-6 py-5">
+              {generatingChart ? (
+                <div className="flex flex-col items-center justify-center gap-4 py-16">
+                  <div className="relative">
+                    <span className="block h-16 w-16 animate-spin rounded-full border-4 border-amber-500/30 border-t-amber-400" />
+                    <span className="absolute inset-0 flex items-center justify-center text-2xl">📊</span>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-lg font-semibold text-amber-200">
+                      AI is picking the perfect chart...
+                    </p>
+                    <p className="mt-1 text-sm text-slate-400">
+                      Analyzing your columns and choosing the best visualization.
+                    </p>
+                  </div>
+                </div>
+              ) : chartSuggestion ? (
+                <div className="space-y-5">
+
+                  {/* Chart type switcher */}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                      Chart type:
+                    </span>
+                    {(["bar", "line", "area", "pie"] as ChartType[]).map((type) => {
+                      const isActive = (chartTypeOverride ?? chartSuggestion.chart_type) === type;
+                      return (
+                        <button
+                          key={type}
+                          onClick={() => setChartTypeOverride(type)}
+                          className={`rounded-md border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                            isActive
+                              ? "border-amber-500/60 bg-amber-500/15 text-amber-200"
+                              : "border-slate-700 bg-slate-900 text-slate-300 hover:border-amber-500/40"
+                          }`}
+                        >
+                          {type === "bar" && "📊 Bar"}
+                          {type === "line" && "📈 Line"}
+                          {type === "area" && "🏔️ Area"}
+                          {type === "pie" && "🥧 Pie"}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* AI reasoning */}
+                  {chartSuggestion.reasoning && (
+                    <div className="rounded-lg border border-purple-500/30 bg-purple-500/10 px-4 py-2.5 text-sm text-purple-200">
+                      <span className="font-semibold">🤖 AI says: </span>
+                      {chartSuggestion.reasoning}
+                    </div>
+                  )}
+
+                  {/* The chart itself */}
+                  <div className="rounded-xl border border-slate-800 bg-slate-900 p-5">
+                    <ChartRenderer
+                      data={viewingSnapshotData ?? editedData}
+                      suggestion={chartSuggestion}
+                      typeOverride={chartTypeOverride}
+                    />
+                  </div>
+
+                  {/* Re-generate button */}
+                  <div className="text-center">
+                    <button
+                      onClick={handleGenerateChart}
+                      className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-sm font-medium text-amber-200 hover:bg-amber-500/20"
+                    >
+                      ✨ Suggest different chart
+                    </button>
+                  </div>
+
+                </div>
+              ) : (
+                <div className="py-12 text-center text-sm text-slate-500">
+                  No chart yet.
+                </div>
+              )}
+            </div>
+
+            <div className="border-t border-slate-800 bg-slate-900/50 px-6 py-3 text-center text-xs text-slate-500">
+              Powered by AI + Recharts. Charts use your current data view.
+            </div>
+
+          </aside>
+        </>
+      )}
+
+      {/* CHAT WITH SPREADSHEET PANEL — Wave 3 */}
+      {showChat && (
+        <>
+          <div
+            className="fixed inset-0 z-40 bg-slate-950/70 backdrop-blur-sm"
+            onClick={() => !chatThinking && setShowChat(false)}
+          />
+
+          <aside className="fixed right-0 top-0 z-50 flex h-full w-full max-w-md flex-col border-l border-slate-800 bg-slate-950 shadow-2xl">
+
+            {/* Header */}
+            <div className="flex items-center justify-between border-b border-slate-800 bg-gradient-to-r from-cyan-500/10 to-purple-500/10 px-6 py-4">
+              <div className="flex items-center gap-3">
+                <span className="text-2xl">💬</span>
+                <div>
+                  <h2 className="text-lg font-bold tracking-tight">Chat with Spreadsheet</h2>
+                  <p className="text-xs text-slate-400">
+                    Ask anything about your data
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                {chatMessages.length > 0 && (
+                  <button
+                    onClick={clearChat}
+                    className="rounded-lg border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-400 hover:border-red-500/40 hover:text-red-300"
+                    title="Clear the conversation"
+                  >
+                    Clear
+                  </button>
+                )}
+                <button
+                  onClick={() => !chatThinking && setShowChat(false)}
+                  disabled={chatThinking}
+                  className="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-slate-200 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            {/* Messages area */}
+            <div className="flex-1 overflow-y-auto px-4 py-4">
+              {chatMessages.length === 0 ? (
+                <div className="mt-8 space-y-4">
+                  <div className="text-center">
+                    <div className="mb-2 text-4xl">🤖</div>
+                    <p className="text-sm font-semibold text-slate-200">
+                      Ask me anything about your spreadsheet!
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      I have read all {(viewingSnapshotData ?? editedData).length} rows.
+                    </p>
+                  </div>
+
+                  {/* Example questions */}
+                  <div className="space-y-2">
+                    <p className="text-center text-xs font-bold uppercase tracking-wider text-slate-500">
+                      Try asking:
+                    </p>
+                    {[
+                      "What was my best sales day?",
+                      "How many days had zero sales?",
+                      "What is the total sales for the month?",
+                      "Which row has the highest value?",
+                      "Are there any unusual patterns?",
+                    ].map((suggestion, idx) => (
+                      <button
+                        key={idx}
+                        onClick={() => setChatInput(suggestion)}
+                        className="w-full rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-left text-xs text-slate-300 transition-colors hover:border-cyan-500/40 hover:bg-slate-800 hover:text-cyan-200"
+                      >
+                        &ldquo;{suggestion}&rdquo;
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {chatMessages.map((msg, idx) => (
+                    <div
+                      key={idx}
+                      className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+                    >
+                      <div
+                        className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${
+                          msg.role === "user"
+                            ? "bg-cyan-500 text-slate-950"
+                            : "border border-slate-800 bg-slate-900 text-slate-200"
+                        }`}
+                      >
+                        {msg.content}
+                      </div>
+                    </div>
+                  ))}
+                  {chatThinking && (
+                    <div className="flex justify-start">
+                      <div className="max-w-[85%] rounded-2xl border border-slate-800 bg-slate-900 px-4 py-2.5">
+                        <div className="flex items-center gap-1.5">
+                          <span className="h-2 w-2 animate-pulse rounded-full bg-cyan-400" />
+                          <span className="h-2 w-2 animate-pulse rounded-full bg-cyan-400 [animation-delay:0.2s]" />
+                          <span className="h-2 w-2 animate-pulse rounded-full bg-cyan-400 [animation-delay:0.4s]" />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Input area */}
+            <div className="border-t border-slate-800 bg-slate-900/50 p-4">
+              <div className="flex items-center gap-2">
+
+                {/* MIC BUTTON — Voice query (Web Speech API) */}
+                {voiceSupported && (
+                  <button
+                    onClick={isListening ? stopVoiceQuery : startVoiceQuery}
+                    disabled={chatThinking}
+                    className={`flex h-9 w-9 items-center justify-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                      isListening
+                        ? "animate-pulse bg-red-500 text-white"
+                        : "border border-slate-700 bg-slate-950 text-slate-300 hover:border-cyan-500/40 hover:text-cyan-300"
+                    }`}
+                    title={isListening ? "Stop listening" : "Speak your question"}
+                  >
+                    {isListening ? "🔴" : "🎤"}
+                  </button>
+                )}
+
+                <input
+                  type="text"
+                  value={chatInput}
+                  onChange={(event) => setChatInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && !chatThinking) {
+                      handleSendChatMessage();
+                    }
+                  }}
+                  placeholder={isListening ? "Listening... speak now!" : "Ask anything..."}
+                  disabled={chatThinking || isListening}
+                  className={`flex-1 rounded-full border bg-slate-950 px-4 py-2 text-sm text-slate-100 placeholder:text-slate-600 focus:outline-none focus:ring-2 disabled:opacity-50 ${
+                    isListening
+                      ? "border-red-500/50 placeholder:text-red-300 focus:border-red-500/50 focus:ring-red-500/30"
+                      : "border-slate-700 focus:border-cyan-500/50 focus:ring-cyan-500/30"
+                  }`}
+                />
+                <button
+                  onClick={() => handleSendChatMessage()}
+                  disabled={chatThinking || !chatInput.trim()}
+                  className="flex h-9 w-9 items-center justify-center rounded-full bg-cyan-500 text-slate-950 transition-colors hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-50"
+                  title="Send (Enter)"
+                >
+                  {chatThinking ? "⏳" : "→"}
+                </button>
+              </div>
+              <p className="mt-2 text-center text-xs text-slate-500">
+                {voiceSupported
+                  ? isListening
+                    ? "🎙️ Listening... speak clearly"
+                    : "Click 🎤 to speak, or type a question. Press Enter to send."
+                  : "Press Enter to send. (Voice not supported in this browser)"}
+              </p>
+            </div>
+
+          </aside>
+        </>
+      )}
 
       {/* AI COMPARE MODAL — shows the AI-generated story of what changed */}
       {showCompareModal && (
@@ -2405,6 +3499,136 @@ function formatCellForDisplay(
 }
 
 // ============================================
+// CHART RENDERER — Visualizes spreadsheet data with Recharts
+// ============================================
+type ChartRendererSuggestion = {
+  chart_type: "bar" | "line" | "pie" | "area";
+  title: string;
+  x_column: number;
+  y_column: number;
+  x_label: string;
+  y_label: string;
+  reasoning: string;
+};
+
+// Distinct emerald-purple-cyan palette for pie slices
+const PIE_COLORS = [
+  "#10b981", "#a855f7", "#06b6d4", "#f59e0b", "#ef4444",
+  "#3b82f6", "#ec4899", "#84cc16", "#f97316", "#8b5cf6",
+];
+
+function ChartRenderer({
+  data,
+  suggestion,
+  typeOverride,
+}: {
+  data: (string | number | boolean | null)[][];
+  suggestion: ChartRendererSuggestion;
+  typeOverride: "bar" | "line" | "pie" | "area" | null;
+}) {
+  // Effective chart type — override wins if user picked one
+  const chartType = typeOverride ?? suggestion.chart_type;
+
+  // Transform the spreadsheet data into Recharts format.
+  // Skip first row if it looks like headers (non-numeric in y-column).
+  const chartData = useMemo(() => {
+    const rows: { name: string; value: number }[] = [];
+    for (let i = 0; i < data.length; i++) {
+      const row = data[i];
+      if (!row) continue;
+      const xValue = row[suggestion.x_column];
+      const yValue = row[suggestion.y_column];
+
+      // Try to parse y as a number — skip if not numeric
+      const numericY = parseFloat(String(yValue ?? ""));
+      if (isNaN(numericY)) continue;
+
+      const xLabel = String(xValue ?? `Row ${i + 1}`).trim() || `Row ${i + 1}`;
+      rows.push({ name: xLabel, value: numericY });
+    }
+    return rows;
+  }, [data, suggestion.x_column, suggestion.y_column]);
+
+  if (chartData.length === 0) {
+    return (
+      <div className="py-12 text-center text-sm text-slate-500">
+        No numeric data found in column {String.fromCharCode(65 + suggestion.y_column)}.
+      </div>
+    );
+  }
+
+  // Render based on chart type
+  return (
+    <div className="h-[400px] w-full">
+      <ResponsiveContainer width="100%" height="100%">
+        {chartType === "bar" ? (
+          <BarChart data={chartData} margin={{ top: 10, right: 20, left: 0, bottom: 40 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+            <XAxis dataKey="name" stroke="#94a3b8" angle={-35} textAnchor="end" interval={0} height={70} style={{ fontSize: 11 }} />
+            <YAxis stroke="#94a3b8" style={{ fontSize: 11 }} />
+            <Tooltip
+              contentStyle={{ backgroundColor: "#0f172a", border: "1px solid #334155", borderRadius: 8, color: "#e2e8f0" }}
+              cursor={{ fill: "#10b98115" }}
+            />
+            <Legend wrapperStyle={{ color: "#94a3b8" }} />
+            <Bar dataKey="value" name={suggestion.y_label} fill="#10b981" radius={[4, 4, 0, 0]} />
+          </BarChart>
+        ) : chartType === "line" ? (
+          <LineChart data={chartData} margin={{ top: 10, right: 20, left: 0, bottom: 40 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+            <XAxis dataKey="name" stroke="#94a3b8" angle={-35} textAnchor="end" interval={0} height={70} style={{ fontSize: 11 }} />
+            <YAxis stroke="#94a3b8" style={{ fontSize: 11 }} />
+            <Tooltip
+              contentStyle={{ backgroundColor: "#0f172a", border: "1px solid #334155", borderRadius: 8, color: "#e2e8f0" }}
+            />
+            <Legend wrapperStyle={{ color: "#94a3b8" }} />
+            <Line type="monotone" dataKey="value" name={suggestion.y_label} stroke="#10b981" strokeWidth={2.5} dot={{ fill: "#10b981" }} />
+          </LineChart>
+        ) : chartType === "area" ? (
+          <AreaChart data={chartData} margin={{ top: 10, right: 20, left: 0, bottom: 40 }}>
+            <defs>
+              <linearGradient id="areaFill" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor="#10b981" stopOpacity={0.4} />
+                <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
+              </linearGradient>
+            </defs>
+            <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+            <XAxis dataKey="name" stroke="#94a3b8" angle={-35} textAnchor="end" interval={0} height={70} style={{ fontSize: 11 }} />
+            <YAxis stroke="#94a3b8" style={{ fontSize: 11 }} />
+            <Tooltip
+              contentStyle={{ backgroundColor: "#0f172a", border: "1px solid #334155", borderRadius: 8, color: "#e2e8f0" }}
+            />
+            <Legend wrapperStyle={{ color: "#94a3b8" }} />
+            <Area type="monotone" dataKey="value" name={suggestion.y_label} stroke="#10b981" strokeWidth={2} fill="url(#areaFill)" />
+          </AreaChart>
+        ) : (
+          // PIE chart
+          <PieChart>
+            <Tooltip
+              contentStyle={{ backgroundColor: "#0f172a", border: "1px solid #334155", borderRadius: 8, color: "#e2e8f0" }}
+            />
+            <Legend wrapperStyle={{ color: "#94a3b8", fontSize: 12 }} />
+            <Pie
+              data={chartData}
+              dataKey="value"
+              nameKey="name"
+              cx="50%"
+              cy="50%"
+              outerRadius={130}
+              label={(entry: { name: string; value: number }) => `${entry.name}: ${entry.value}`}
+            >
+              {chartData.map((_, idx) => (
+                <Cell key={idx} fill={PIE_COLORS[idx % PIE_COLORS.length]} />
+              ))}
+            </Pie>
+          </PieChart>
+        )}
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+// ============================================
 // COLUMN STATISTICS — Computes Sum, Avg, Min, Max for a column
 // ============================================
 type ColumnStats = {
@@ -2488,6 +3712,41 @@ function StatRow({
       <span className={`font-semibold ${warning ? "text-amber-400" : "text-slate-200"}`}>
         {value}
       </span>
+    </div>
+  );
+}
+
+// ============================================
+// TOOLBAR GROUP — A labeled section with a subtle colored card background
+// ============================================
+type GroupAccent = "slate" | "emerald" | "cyan" | "amber" | "purple";
+
+const GROUP_ACCENT_STYLES: Record<GroupAccent, { label: string; bg: string; border: string }> = {
+  slate:   { label: "text-slate-400",   bg: "bg-slate-800/40",   border: "border-slate-700/40" },
+  emerald: { label: "text-emerald-300", bg: "bg-emerald-500/5",  border: "border-emerald-500/20" },
+  cyan:    { label: "text-cyan-300",    bg: "bg-cyan-500/5",     border: "border-cyan-500/20" },
+  amber:   { label: "text-amber-300",   bg: "bg-amber-500/5",    border: "border-amber-500/20" },
+  purple:  { label: "text-purple-300",  bg: "bg-purple-500/5",   border: "border-purple-500/20" },
+};
+
+function ToolbarGroup({
+  label,
+  accent = "slate",
+  children,
+}: {
+  label: string;
+  accent?: GroupAccent;
+  children: React.ReactNode;
+}) {
+  const style = GROUP_ACCENT_STYLES[accent];
+  return (
+    <div className={`flex flex-col gap-1.5 rounded-lg border ${style.border} ${style.bg} px-2.5 pt-1.5 pb-2`}>
+      {/* Section label — colored accent, small uppercase */}
+      <span className={`text-[10px] font-bold uppercase tracking-widest ${style.label}`}>
+        {label}
+      </span>
+      {/* The buttons in this group, tightly packed */}
+      <div className="flex items-center gap-1">{children}</div>
     </div>
   );
 }
@@ -2695,7 +3954,33 @@ function formatTimestamp(isoTimestamp: string): string {
 }
 
 // ============================================
-// STAT — Small metric card (file summary)
+// COMPACT STAT — Inline pill for the slim file info strip
+// ============================================
+function CompactStat({
+  label,
+  value,
+  highlight,
+}: {
+  label: string;
+  value: number;
+  highlight?: boolean;
+}) {
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-medium ${
+        highlight
+          ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
+          : "border-slate-700 bg-slate-800/40 text-slate-300"
+      }`}
+    >
+      <span className="text-slate-500">{label}:</span>
+      <span className="font-bold">{value}</span>
+    </span>
+  );
+}
+
+// ============================================
+// STAT — Small metric card (file summary, larger version — still used in stats panel)
 // ============================================
 function Stat({ label, value, highlight }: { label: string; value: number; highlight?: boolean }) {
   return (
@@ -2804,6 +4089,131 @@ function SpreadsheetPreview() {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ============================================
+// BENTO GRID FEATURE COMPONENTS — Apple-style varying sizes
+// ============================================
+type FeatureAccent = "emerald" | "purple" | "amber" | "cyan" | "yellow" | "slate";
+
+const FEATURE_ACCENT_STYLES: Record<FeatureAccent, { border: string; iconBg: string; iconText: string; glow: string; title: string }> = {
+  emerald: { border: "border-emerald-500/20 hover:border-emerald-500/50", iconBg: "bg-emerald-500/20", iconText: "text-emerald-300", glow: "hover:shadow-emerald-500/10", title: "group-hover:text-emerald-300" },
+  purple:  { border: "border-purple-500/20 hover:border-purple-500/50",   iconBg: "bg-purple-500/20",  iconText: "text-purple-300",  glow: "hover:shadow-purple-500/10",  title: "group-hover:text-purple-300" },
+  amber:   { border: "border-amber-500/20 hover:border-amber-500/50",     iconBg: "bg-amber-500/20",   iconText: "text-amber-300",   glow: "hover:shadow-amber-500/10",   title: "group-hover:text-amber-300" },
+  cyan:    { border: "border-cyan-500/20 hover:border-cyan-500/50",       iconBg: "bg-cyan-500/20",    iconText: "text-cyan-300",    glow: "hover:shadow-cyan-500/10",    title: "group-hover:text-cyan-300" },
+  yellow:  { border: "border-yellow-500/20 hover:border-yellow-500/50",   iconBg: "bg-yellow-500/20",  iconText: "text-yellow-300",  glow: "hover:shadow-yellow-500/10",  title: "group-hover:text-yellow-300" },
+  slate:   { border: "border-slate-700 hover:border-slate-500",           iconBg: "bg-slate-700/60",   iconText: "text-slate-300",   glow: "hover:shadow-slate-500/10",   title: "group-hover:text-slate-100" },
+};
+
+// FEATURED — Big 2x2 card with mini timeline visualization
+function BentoFeatured({
+  icon,
+  title,
+  description,
+  accent = "emerald",
+}: {
+  icon: string;
+  title: string;
+  description: string;
+  accent?: FeatureAccent;
+}) {
+  const style = FEATURE_ACCENT_STYLES[accent];
+  return (
+    <div className={`group relative flex flex-col justify-between overflow-hidden rounded-3xl border ${style.border} bg-gradient-to-br from-slate-900 via-slate-900/95 to-slate-950 p-7 transition-all hover:-translate-y-1 hover:shadow-2xl ${style.glow} sm:col-span-2 lg:col-span-2 lg:row-span-2`}>
+      {/* Subtle glow in background */}
+      <div className="pointer-events-none absolute -right-20 -top-20 h-64 w-64 rounded-full bg-emerald-500/10 blur-3xl" />
+
+      <div className="relative flex flex-col gap-4">
+        <div className={`flex h-16 w-16 items-center justify-center rounded-2xl ${style.iconBg} text-4xl shadow-lg transition-transform group-hover:scale-110`}>
+          {icon}
+        </div>
+        <div>
+          <h3 className={`text-2xl font-bold text-slate-100 transition-colors ${style.title}`}>
+            {title}
+          </h3>
+          <p className="mt-2 text-base leading-relaxed text-slate-400">
+            {description}
+          </p>
+        </div>
+      </div>
+
+      {/* Mini timeline visualization at the bottom */}
+      <div className="relative mt-6">
+        <div className="flex items-center gap-3">
+          <span className="text-xs font-bold uppercase tracking-widest text-emerald-400/70">Timeline</span>
+          <div className="h-px flex-1 bg-gradient-to-r from-emerald-500/40 via-emerald-500/20 to-transparent" />
+        </div>
+        <div className="mt-3 flex items-center justify-between">
+          {[...Array(7)].map((_, i) => (
+            <div key={i} className="flex flex-col items-center gap-1">
+              <div className={`h-2 w-2 rounded-full ${i === 5 ? "ring-2 ring-emerald-400 ring-offset-2 ring-offset-slate-900 bg-emerald-400" : "bg-emerald-500/40"}`} />
+              <span className="text-[9px] text-slate-600">v{i + 1}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// WIDE — 2x1 card (good for medium-importance features)
+function BentoWide({
+  icon,
+  title,
+  description,
+  accent = "purple",
+}: {
+  icon: string;
+  title: string;
+  description: string;
+  accent?: FeatureAccent;
+}) {
+  const style = FEATURE_ACCENT_STYLES[accent];
+  return (
+    <div className={`group flex flex-col gap-3 rounded-2xl border ${style.border} bg-slate-900/60 p-5 backdrop-blur transition-all hover:-translate-y-0.5 hover:bg-slate-900 hover:shadow-xl ${style.glow} sm:col-span-2 lg:col-span-2`}>
+      <div className="flex items-start gap-3">
+        <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl ${style.iconBg} text-2xl transition-transform group-hover:scale-110`}>
+          {icon}
+        </div>
+        <div className="flex-1">
+          <h3 className={`text-lg font-bold text-slate-100 transition-colors ${style.title}`}>
+            {title}
+          </h3>
+          <p className="mt-1 text-sm leading-relaxed text-slate-400">
+            {description}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// SMALL — 1x1 compact card
+function BentoSmall({
+  icon,
+  title,
+  description,
+  accent = "cyan",
+}: {
+  icon: string;
+  title: string;
+  description: string;
+  accent?: FeatureAccent;
+}) {
+  const style = FEATURE_ACCENT_STYLES[accent];
+  return (
+    <div className={`group flex flex-col gap-2 rounded-2xl border ${style.border} bg-slate-900/60 p-4 backdrop-blur transition-all hover:-translate-y-0.5 hover:bg-slate-900 hover:shadow-xl ${style.glow}`}>
+      <div className={`flex h-10 w-10 items-center justify-center rounded-xl ${style.iconBg} text-xl transition-transform group-hover:scale-110`}>
+        {icon}
+      </div>
+      <h3 className={`text-sm font-bold text-slate-100 transition-colors ${style.title}`}>
+        {title}
+      </h3>
+      <p className="text-xs leading-snug text-slate-500">
+        {description}
+      </p>
     </div>
   );
 }

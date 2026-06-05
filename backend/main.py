@@ -28,6 +28,7 @@ from fastapi.responses import StreamingResponse
 from groq import Groq
 from openpyxl import Workbook, load_workbook
 from pydantic import BaseModel
+from supabase import Client, create_client
 
 # ============================================
 # Load environment variables from .env file
@@ -40,6 +41,26 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 # Initialize Groq client only if the key was found
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
+
+# ============================================
+# Supabase setup — optional persistent storage
+# ============================================
+# If SUPABASE_URL and SUPABASE_KEY are set, snapshots are saved to the cloud
+# and survive backend restarts. Otherwise, falls back to in-memory storage.
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SUPABASE_TABLE = "snapshots"
+
+supabase_client: Client | None = None
+if SUPABASE_URL and SUPABASE_KEY:
+    try:
+        supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
+        print("[Supabase] Connected — snapshots will persist to cloud database.")
+    except Exception as error:
+        print(f"[Supabase] Failed to connect: {error}. Falling back to in-memory storage.")
+        supabase_client = None
+else:
+    print("[Supabase] Not configured — using in-memory storage only.")
 
 
 # ============================================
@@ -87,6 +108,7 @@ def welcome():
         "docs": "Visit /docs to see all available endpoints.",
         "snapshots_stored": len(snapshots_log),
         "ai_enabled": groq_client is not None,
+        "supabase_enabled": supabase_client is not None,
     }
 
 
@@ -132,20 +154,17 @@ async def upload_spreadsheet(file: UploadFile = File(...)):
 
     try:
         workbook = load_workbook(BytesIO(contents), data_only=True)
-        sheet = workbook.active
     except Exception as error:
         raise HTTPException(status_code=400, detail=f"Could not parse Excel: {error}")
 
-    if sheet is None:
-        raise HTTPException(status_code=400, detail="No active sheet found.")
+    if not workbook.sheetnames:
+        raise HTTPException(status_code=400, detail="No sheets found in workbook.")
 
     # Helper: turn dates and datetimes into clean, readable strings.
-    # If the time is midnight (00:00:00), we treat it as just a date.
     def format_cell(value: Any) -> Any:
         if value is None:
             return ""
         if isinstance(value, datetime):
-            # If the time portion is just midnight, output as date only
             if value.hour == 0 and value.minute == 0 and value.second == 0:
                 return value.strftime("%Y-%m-%d")
             return value.strftime("%Y-%m-%d %H:%M:%S")
@@ -155,65 +174,89 @@ async def upload_spreadsheet(file: UploadFile = File(...)):
             return value.strftime("%H:%M:%S")
         return value
 
-    # Read every row from the Excel sheet
-    all_rows: list[list[Any]] = []
-    for row in sheet.iter_rows(values_only=True):
-        cleaned_row = [format_cell(cell) for cell in row]
-        all_rows.append(cleaned_row)
-
-    # ------ Auto-skip empty rows at TOP and BOTTOM ------
-    # We only strip empty rows at the edges. Empty rows in the middle stay because
-    # they might be intentional separators or visual spacing.
     def is_empty_row(row: list[Any]) -> bool:
-        """A row is empty when every cell is empty/whitespace-only."""
         for cell in row:
             if cell is not None and str(cell).strip() != "":
                 return False
         return True
 
-    skipped_top = 0
-    while skipped_top < len(all_rows) and is_empty_row(all_rows[skipped_top]):
-        skipped_top += 1
+    # ------ Read EVERY sheet in the workbook ------
+    all_sheets: list[dict[str, Any]] = []
+    for sheet_name in workbook.sheetnames:
+        sheet = workbook[sheet_name]
+        if sheet is None:
+            continue
 
-    skipped_bottom = 0
-    while (
-        skipped_bottom < len(all_rows) - skipped_top
-        and is_empty_row(all_rows[len(all_rows) - 1 - skipped_bottom])
-    ):
-        skipped_bottom += 1
+        # Read all rows for this sheet
+        sheet_all_rows: list[list[Any]] = []
+        for row in sheet.iter_rows(values_only=True):
+            cleaned_row = [format_cell(cell) for cell in row]
+            sheet_all_rows.append(cleaned_row)
 
-    end_index = len(all_rows) - skipped_bottom
-    rows = all_rows[skipped_top:end_index]
+        # Auto-skip empty rows at top/bottom for this sheet
+        s_top = 0
+        while s_top < len(sheet_all_rows) and is_empty_row(sheet_all_rows[s_top]):
+            s_top += 1
 
-    # Safety: if the file was completely empty, return one empty row so UI does not break
-    if not rows and all_rows:
-        rows = [["" for _ in range(len(all_rows[0]))]]
-    elif not rows:
-        rows = [[""]]
+        s_bottom = 0
+        while (
+            s_bottom < len(sheet_all_rows) - s_top
+            and is_empty_row(sheet_all_rows[len(sheet_all_rows) - 1 - s_bottom])
+        ):
+            s_bottom += 1
 
-    # Build a friendly skip message (only shows if something was skipped)
+        end_idx = len(sheet_all_rows) - s_bottom
+        sheet_rows = sheet_all_rows[s_top:end_idx]
+
+        # Safety: prevent empty result from breaking UI
+        if not sheet_rows and sheet_all_rows:
+            sheet_rows = [["" for _ in range(len(sheet_all_rows[0]))]]
+        elif not sheet_rows:
+            sheet_rows = [[""]]
+
+        all_sheets.append({
+            "name": sheet_name,
+            "row_count": len(sheet_rows),
+            "column_count": len(sheet_rows[0]) if sheet_rows else 0,
+            "data": sheet_rows,
+            "skipped_top": s_top,
+            "skipped_bottom": s_bottom,
+        })
+
+    if not all_sheets:
+        raise HTTPException(status_code=400, detail="No valid sheets found.")
+
+    # Use the first sheet as the "main" sheet for backwards compatibility
+    main_sheet = all_sheets[0]
+
+    # Build skip message for the main sheet only
     skip_notes: list[str] = []
-    if skipped_top > 0:
+    if main_sheet["skipped_top"] > 0:
         skip_notes.append(
-            f"Skipped {skipped_top} empty row{'s' if skipped_top > 1 else ''} at top"
+            f"Skipped {main_sheet['skipped_top']} empty row at top"
         )
-    if skipped_bottom > 0:
+    if main_sheet["skipped_bottom"] > 0:
         skip_notes.append(
-            f"Skipped {skipped_bottom} empty row{'s' if skipped_bottom > 1 else ''} at bottom"
+            f"Skipped {main_sheet['skipped_bottom']} empty row at bottom"
         )
     skip_message = f" ({'. '.join(skip_notes)})" if skip_notes else ""
+    sheets_msg = (
+        f" {len(all_sheets)} sheets found." if len(all_sheets) > 1 else ""
+    )
 
     return {
         "success": True,
         "filename": file.filename,
-        "sheet_name": sheet.title,
-        "row_count": len(rows),
-        "column_count": len(rows[0]) if rows else 0,
-        "data": rows,
-        "skipped_top": skipped_top,
-        "skipped_bottom": skipped_bottom,
+        "sheet_name": main_sheet["name"],
+        "row_count": main_sheet["row_count"],
+        "column_count": main_sheet["column_count"],
+        "data": main_sheet["data"],
+        "skipped_top": main_sheet["skipped_top"],
+        "skipped_bottom": main_sheet["skipped_bottom"],
+        "sheets": all_sheets,
         "message": (
-            f"Successfully parsed {file.filename}. Found {len(rows)} rows.{skip_message}"
+            f"Successfully parsed {file.filename}.{sheets_msg}"
+            f" Found {main_sheet['row_count']} rows in '{main_sheet['name']}'.{skip_message}"
         ),
     }
 
@@ -234,7 +277,10 @@ class SnapshotRequest(BaseModel):
 
 @app.post("/save-snapshot")
 def save_snapshot(snapshot: SnapshotRequest):
-    """Append a new snapshot to the Raft-style log."""
+    """
+    Append a new snapshot. Persists to Supabase if configured, otherwise
+    stores in memory (lost on restart).
+    """
     new_snapshot = {
         "id": str(uuid4()),
         "filename": snapshot.filename,
@@ -247,12 +293,35 @@ def save_snapshot(snapshot: SnapshotRequest):
         "note": snapshot.note,
         "author": snapshot.author or "Anonymous",
     }
-    snapshots_log.append(new_snapshot)
+
+    # Try Supabase first if configured
+    storage_used = "memory"
+    if supabase_client:
+        try:
+            supabase_client.table(SUPABASE_TABLE).insert(new_snapshot).execute()
+            storage_used = "supabase"
+        except Exception as error:
+            # Fall back to memory if Supabase fails
+            print(f"[Supabase] Save failed, using memory: {error}")
+            snapshots_log.append(new_snapshot)
+    else:
+        snapshots_log.append(new_snapshot)
+
+    # Get total count (combine cloud + memory if both have data)
+    total = len(snapshots_log)
+    if supabase_client and storage_used == "supabase":
+        try:
+            count_result = supabase_client.table(SUPABASE_TABLE).select("id", count="exact").execute()
+            total = count_result.count or 0
+        except Exception:
+            pass
+
     return {
         "success": True,
         "snapshot_id": new_snapshot["id"],
         "saved_at": new_snapshot["saved_at"],
-        "total_snapshots": len(snapshots_log),
+        "total_snapshots": total,
+        "storage": storage_used,
         "message": (
             f"Snapshot saved with {snapshot.changes_from_previous} change"
             f"{'s' if snapshot.changes_from_previous != 1 else ''}."
@@ -262,39 +331,73 @@ def save_snapshot(snapshot: SnapshotRequest):
 
 @app.get("/snapshots")
 def list_snapshots(filename: str | None = None):
-    """List all snapshots, optionally filtered by filename."""
-    if filename:
-        matching = [s for s in snapshots_log if s["filename"] == filename]
-    else:
-        matching = list(snapshots_log)
+    """List all snapshots, optionally filtered by filename. Pulls from Supabase if configured."""
+    matching: list[dict[str, Any]] = []
 
-    summaries = [
-        {
-            "id": s["id"],
-            "filename": s["filename"],
-            "sheet_name": s["sheet_name"],
-            "saved_at": s["saved_at"],
-            "row_count": s["row_count"],
-            "column_count": s["column_count"],
-            "changes_from_previous": s["changes_from_previous"],
-            "note": s["note"],
-            "author": s.get("author", "Anonymous"),
-        }
-        for s in matching
-    ]
+    # Try Supabase first
+    if supabase_client:
+        try:
+            query = supabase_client.table(SUPABASE_TABLE).select(
+                "id, filename, sheet_name, saved_at, row_count, column_count, "
+                "changes_from_previous, note, author"
+            ).order("saved_at", desc=False)
+            if filename:
+                query = query.eq("filename", filename)
+            result = query.execute()
+            matching = result.data or []
+        except Exception as error:
+            print(f"[Supabase] List failed, using memory: {error}")
+            matching = []
+
+    # Append in-memory snapshots (for sessions before Supabase was set up)
+    in_memory = (
+        [s for s in snapshots_log if s["filename"] == filename] if filename
+        else list(snapshots_log)
+    )
+
+    # Combine and dedupe by id
+    seen_ids = {s["id"] for s in matching}
+    for snap in in_memory:
+        if snap["id"] not in seen_ids:
+            matching.append({
+                "id": snap["id"],
+                "filename": snap["filename"],
+                "sheet_name": snap["sheet_name"],
+                "saved_at": snap["saved_at"],
+                "row_count": snap["row_count"],
+                "column_count": snap["column_count"],
+                "changes_from_previous": snap["changes_from_previous"],
+                "note": snap["note"],
+                "author": snap.get("author", "Anonymous"),
+            })
+
     return {
-        "count": len(summaries),
+        "count": len(matching),
         "filename_filter": filename,
-        "snapshots": summaries,
+        "snapshots": matching,
+        "storage": "supabase" if supabase_client else "memory",
     }
 
 
 @app.get("/snapshot/{snapshot_id}")
 def get_snapshot(snapshot_id: str):
-    """Return the full data of one snapshot."""
+    """Return the full data of one snapshot. Checks Supabase first, then memory."""
+    # Try Supabase first
+    if supabase_client:
+        try:
+            result = supabase_client.table(SUPABASE_TABLE).select("*").eq(
+                "id", snapshot_id
+            ).limit(1).execute()
+            if result.data:
+                return result.data[0]
+        except Exception as error:
+            print(f"[Supabase] Get failed, checking memory: {error}")
+
+    # Fall back to memory
     for snapshot in snapshots_log:
         if snapshot["id"] == snapshot_id:
             return snapshot
+
     raise HTTPException(status_code=404, detail=f"Snapshot {snapshot_id} not found.")
 
 
@@ -645,3 +748,212 @@ def export_spreadsheet(request: ExportRequest):
             "Content-Disposition": f'attachment; filename="{download_filename}"',
         },
     )
+
+
+# ============================================
+# Chat with Spreadsheet — Wave 3 Feature 1
+# ============================================
+class ChatMessage(BaseModel):
+    role: str  # "user" or "assistant"
+    content: str
+
+
+class ChatRequest(BaseModel):
+    """Payload for asking AI a question about a spreadsheet."""
+    filename: str
+    sheet_name: str
+    data: list[list[Any]]
+    question: str
+    history: list[ChatMessage] = []  # Previous chat turns for context
+
+
+@app.post("/chat-with-spreadsheet")
+def chat_with_spreadsheet(request: ChatRequest):
+    """
+    Use Groq AI to answer questions about a spreadsheet in plain English.
+    Supports multi-turn conversation via history.
+    """
+    if not groq_client:
+        raise HTTPException(
+            status_code=500,
+            detail="Artificial Intelligence is not configured.",
+        )
+
+    # Limit data sent to AI to avoid token limits
+    SAMPLE_LIMIT = 80
+    sample = request.data[:SAMPLE_LIMIT]
+
+    # Build readable text view of the spreadsheet
+    rows_text: list[str] = []
+    for index, row in enumerate(sample):
+        row_str = " | ".join(str(cell) for cell in row)
+        rows_text.append(f"Row {index + 1}: {row_str}")
+    data_text = "\n".join(rows_text)
+
+    # System message tells the AI how to behave
+    system_prompt = f"""You are a sharp, direct data assistant. The user has uploaded a spreadsheet and asks quick questions about it.
+
+File: {request.filename}
+Sheet: {request.sheet_name}
+Total rows: {len(request.data)}
+
+SPREADSHEET DATA:
+{data_text}
+
+CRITICAL RESPONSE RULES:
+- ALWAYS lead with the DIRECT ANSWER in the FIRST sentence.
+- Keep responses to 1-2 sentences MAXIMUM for simple factual questions ("what is", "how many", "which day", etc.).
+- Use up to 3 short sentences only when reasoning is genuinely needed.
+- NEVER explain your reasoning step-by-step unless explicitly asked.
+- NEVER say "I'll look at...", "Let me check...", or "Among these...". Just give the answer.
+- Format numbers cleanly with commas (e.g., "12,000" not "12000").
+- For "best/highest/largest", state the row, value, and date directly.
+- If the question is unclear or unanswerable from the data, say so in ONE sentence.
+- Skip header rows and totals/summary rows (rows with no date) when finding "best" values.
+- Be confident and decisive. Sound like a quick Slack reply, not an essay.
+
+EXAMPLE GOOD ANSWERS:
+Q: "What was my best sales day?"
+A: "Your best sales day was 2026-01-04 with 12,000 in sales."
+
+Q: "How many days had zero sales?"
+A: "18 days had zero sales."
+
+Q: "What is the total sales for the month?"
+A: "Total sales for the month: 74,000."
+
+EXAMPLE BAD ANSWERS (do NOT do this):
+- "To find your best sales day, I'll look at..." ← NO!
+- "First, let me check the columns..." ← NO!
+- Long paragraph explaining reasoning ← NO!"""
+
+    # Build the messages list for the AI
+    messages: list[dict[str, str]] = [
+        {"role": "system", "content": system_prompt}
+    ]
+
+    # Add previous conversation turns
+    for turn in request.history[-10:]:  # Keep last 10 turns for context
+        messages.append({"role": turn.role, "content": turn.content})
+
+    # Add the current question
+    messages.append({"role": "user", "content": request.question})
+
+    try:
+        response = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=messages,  # type: ignore[arg-type]
+            temperature=0.4,
+            max_tokens=1024,
+        )
+
+        answer = response.choices[0].message.content or ""
+
+        return {
+            "success": True,
+            "answer": answer,
+            "model": "llama-3.3-70b-versatile",
+        }
+
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail=f"AI chat failed: {error}",
+        )
+
+
+# ============================================
+# Suggest Chart endpoint — Wave 3 Feature 2
+# ============================================
+class ChartSuggestRequest(BaseModel):
+    """Payload for asking AI which chart best represents the data."""
+    filename: str
+    sheet_name: str
+    data: list[list[Any]]
+
+
+@app.post("/suggest-chart")
+def suggest_chart(request: ChartSuggestRequest):
+    """
+    Use Groq AI to look at the spreadsheet and pick:
+    - The best chart type (bar / line / pie / area)
+    - Which column should be the x-axis (categories or time)
+    - Which column should be the y-axis (numeric values)
+    - A friendly chart title
+    """
+    if not groq_client:
+        raise HTTPException(
+            status_code=500,
+            detail="Artificial Intelligence is not configured.",
+        )
+
+    # Send a representative sample
+    sample = request.data[:40]
+    rows_text: list[str] = []
+    for index, row in enumerate(sample):
+        row_str = " | ".join(str(cell) for cell in row)
+        rows_text.append(f"Row {index + 1}: {row_str}")
+    data_text = "\n".join(rows_text)
+
+    num_columns = len(request.data[0]) if request.data else 0
+    col_labels = [_col_letter(i) for i in range(num_columns)]
+
+    user_prompt = f"""You are a data visualization expert. Look at this spreadsheet and decide the BEST way to visualize it as a chart.
+
+File: {request.filename}
+Total rows: {len(request.data)}
+Showing first {len(sample)} rows.
+
+Columns available (0-indexed): {", ".join(f"{i}={col_labels[i]}" for i in range(num_columns))}
+
+Data:
+{data_text}
+
+Return STRICT JSON in this exact structure:
+{{
+  "chart_type": "bar" or "line" or "pie" or "area",
+  "title": "A clear title for the chart",
+  "x_column": <0-indexed column number for x-axis>,
+  "y_column": <0-indexed column number for y-axis>,
+  "x_label": "Friendly name for the x-axis",
+  "y_label": "Friendly name for the y-axis",
+  "reasoning": "1 sentence explaining why this is the best chart"
+}}
+
+Rules:
+- Use "line" or "area" if x-column is a date or time
+- Use "bar" for categorical x-column with numeric y
+- Use "pie" only if there are few distinct x values (under 10)
+- y_column MUST be a column with numeric values
+- x_column MUST be a column with identifiers (dates, names, categories)
+- If the first row looks like header labels, skip them for value analysis
+- Pick the MOST INTERESTING / MEANINGFUL chart for THIS specific data
+"""
+
+    try:
+        response = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a data visualization expert. Respond ONLY in valid JSON, no markdown.",
+                },
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.2,
+            max_tokens=512,
+        )
+
+        suggestion = json.loads(response.choices[0].message.content or "{}")
+
+        return {
+            "success": True,
+            "suggestion": suggestion,
+        }
+
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Chart suggestion failed: {error}",
+        )

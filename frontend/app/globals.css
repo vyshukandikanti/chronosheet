@@ -92,6 +92,16 @@ html.theme-light .text-yellow-200 { color: #854d0e !important; }
 html.theme-light .text-amber-300 { color: #b45309 !important; }
 html.theme-light .text-red-300 { color: #b91c1c !important; }
 
+/* Native select dropdown options — force readable colors in both themes */
+select option {
+  background-color: #0f172a !important;
+  color: #e2e8f0 !important;
+}
+html.theme-light select option {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+}
+
 /* Background tints — slightly stronger in light mode for visibility */
 html.theme-light .bg-emerald-500\/10 { background-color: rgba(16, 185, 129, 0.15) !important; }
 html.theme-light .bg-purple-500\/10 { background-color: rgba(168, 85, 247, 0.15) !important; }
