@@ -14,6 +14,5 @@ python-multipart
 groq                      # Groq AI - free, fast Llama 3.3 70B access
 python-dotenv             # Loads .env file at startup
 
-# Future additions:
-# supabase                # For persistent snapshot storage
-# pysyncobj               # For the Raft consensus layer
+# Persistent storage
+supabase                  # For persistent snapshot storage in cloud
