@@ -24,10 +24,13 @@ export default function BackendStatus() {
   // React state to remember the current connection status
   const [status, setStatus] = useState<Status>("checking");
 
+  // Backend URL — uses env var in production, falls back to localhost in dev
+  const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+
   // This runs once when the component is shown on screen
   useEffect(() => {
     // Send a request to the backend health endpoint
-    fetch("http://localhost:8000/health")
+    fetch(`${backendUrl}/health`)
       .then((response) => {
         // If the response is okay (status 200), backend is alive
         if (response.ok) {
@@ -40,7 +43,7 @@ export default function BackendStatus() {
         // If anything fails (no network, server down), mark as offline
         setStatus("offline");
       });
-  }, []);
+  }, [backendUrl]);
 
   // Different visual settings for each state
   const display = {

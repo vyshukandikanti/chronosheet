@@ -53,7 +53,9 @@ type SpreadsheetData = {
   sheets?: SheetInfo[];  // All sheets in the workbook
 };
 
-const BACKEND_URL = "http://localhost:8000";
+// Backend URL — uses NEXT_PUBLIC_BACKEND_URL env var when deployed,
+// falls back to localhost during local development.
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
 
 // Convert a column index (0, 1, 2, ...) into Excel-style letters (A, B, C, ..., AA, AB, ...)
 function columnLetter(index: number): string {
