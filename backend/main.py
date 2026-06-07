@@ -78,9 +78,15 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
+        # Local development
         "http://localhost:3000",
         "http://192.168.0.106:3000",
+        # Production frontend on Netlify
+        "https://chronosheet.netlify.app",
     ],
+    # Also allow Netlify preview deploys
+    # (URLs like deploy-preview-X--chronosheet.netlify.app)
+    allow_origin_regex=r"https://.*--chronosheet\.netlify\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
