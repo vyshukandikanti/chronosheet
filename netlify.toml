@@ -1,0 +1,23 @@
+# Netlify configuration for ChronoSheet
+# ======================================
+# This file tells Netlify exactly how to build and serve our app.
+# It lives at the project root (next to backend/ and frontend/ folders).
+
+[build]
+  # Tell Netlify our frontend code lives in the "frontend" subfolder
+  base = "frontend"
+
+  # After building, Netlify should serve files from "frontend/out/"
+  # (this is where Next.js static export puts the generated HTML/JS/CSS)
+  publish = "out"
+
+  # The command Netlify runs to build the site
+  command = "npm run build"
+
+# Single-Page-App-style routing fallback:
+# If a user visits a path that doesn't have its own HTML file,
+# serve index.html and let the client-side router handle it.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
