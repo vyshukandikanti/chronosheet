@@ -386,6 +386,41 @@ def list_snapshots(filename: str | None = None):
         "storage": "supabase" if supabase_client else "memory",
     }
 
+# ============================================
+# Public snapshot endpoint (for sharing links)
+# ============================================
+# Anyone can fetch a snapshot using its ID — no login needed.
+# This powers the "Share Link" feature so friends can view
+# your spreadsheet without an account.
+@app.get("/public-snapshot/{snapshot_id}")
+def get_public_snapshot(snapshot_id: str):
+    """Return a single snapshot by ID. Read-only, public access."""
+    
+    # Try Supabase first (cloud storage)
+    if supabase_client:
+        try:
+            result = (
+                supabase_client.table("snapshots")
+                .select("*")
+                .eq("id", snapshot_id)
+                .execute()
+            )
+            if result.data and len(result.data) > 0:
+                return result.data[0]
+        except Exception as e:
+            print(f"Supabase lookup error: {e}")
+    
+    # Fall back to in-memory storage (search the snapshots log)
+    for snapshot in snapshots_log:
+        if snapshot.get("id") == snapshot_id:
+            return snapshot
+
+    # Not found anywhere
+    raise HTTPException(
+        status_code=404,
+        detail=f"Snapshot {snapshot_id} not found",
+    )
+
 
 @app.get("/snapshot/{snapshot_id}")
 def get_snapshot(snapshot_id: str):

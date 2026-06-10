@@ -761,6 +761,8 @@ function SpreadsheetView({
   const [viewingSnapshotData, setViewingSnapshotData] = useState<SheetMatrix | null>(null);
   // Are we currently fetching a snapshot from the backend?
   const [loadingSnapshot, setLoadingSnapshot] = useState(false);
+  // Tracks which snapshot's share link was just copied — for "Copied!" feedback
+  const [copiedSnapshotId, setCopiedSnapshotId] = useState<string | null>(null);
 
   // ------ Arrow key navigation (like Excel) ------
   // Press ↑ ↓ ← → to move the active cell.
@@ -3396,45 +3398,94 @@ function SpreadsheetView({
                       const isViewing = viewingSnapshotId === snapshot.id;
                       const snapshotNumber = snapshotsList.length - index;
 
+                      const justCopied = copiedSnapshotId === snapshot.id;
+
                       return (
-                        <button
+                        <div
                           key={snapshot.id}
-                          onClick={() => {
-                            travelToSnapshot(snapshot.id);
-                            setShowHistory(false);
-                          }}
-                          disabled={loadingSnapshot}
-                          className={`w-full rounded-lg border p-3 text-left transition-colors disabled:opacity-50 ${
+                          className={`group w-full rounded-lg border p-3 transition-colors ${
+                            loadingSnapshot ? "opacity-50" : ""
+                          } ${
                             isViewing
                               ? "border-purple-500/50 bg-purple-500/10"
                               : "border-slate-800 bg-slate-900 hover:border-purple-500/30 hover:bg-slate-800"
                           }`}
                         >
-                          <div className="flex items-center justify-between">
-                            <span className={`font-semibold ${isViewing ? "text-purple-300" : "text-slate-200"}`}>
-                              🕐 Snapshot #{snapshotNumber}
-                            </span>
-                            {isViewing && (
-                              <span className="text-xs font-medium text-purple-400">Viewing</span>
-                            )}
+                          {/* Top row: title + Share button */}
+                          <div className="flex items-center justify-between gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (loadingSnapshot) return;
+                                travelToSnapshot(snapshot.id);
+                                setShowHistory(false);
+                              }}
+                              disabled={loadingSnapshot}
+                              className="flex-1 text-left disabled:cursor-not-allowed"
+                            >
+                              <div className="flex items-center justify-between">
+                                <span className={`font-semibold ${isViewing ? "text-purple-300" : "text-slate-200"}`}>
+                                  🕐 Snapshot #{snapshotNumber}
+                                </span>
+                                {isViewing && (
+                                  <span className="text-xs font-medium text-purple-400">Viewing</span>
+                                )}
+                              </div>
+                            </button>
+                            {/* Share link button */}
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                const shareUrl = `${window.location.origin}/share?id=${snapshot.id}`;
+                                navigator.clipboard
+                                  .writeText(shareUrl)
+                                  .then(() => {
+                                    setCopiedSnapshotId(snapshot.id);
+                                    setTimeout(() => setCopiedSnapshotId(null), 2000);
+                                  })
+                                  .catch(() => {
+                                    alert(`Copy this link to share:\n${shareUrl}`);
+                                  });
+                              }}
+                              title="Copy share link"
+                              className={`shrink-0 rounded-md px-2 py-1 text-xs font-medium transition ${
+                                justCopied
+                                  ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
+                                  : "bg-slate-800 text-slate-300 hover:bg-emerald-500/20 hover:text-emerald-300 border border-slate-700"
+                              }`}
+                            >
+                              {justCopied ? "✓ Copied" : "🔗 Share"}
+                            </button>
                           </div>
-                          <p className="mt-1 text-xs text-slate-400">
-                            <span className="font-semibold text-emerald-400/80">
-                              By {snapshot.author || "Anonymous"}
-                            </span>
-                            <span className="mx-1.5 text-slate-600">·</span>
-                            {formatTimestamp(snapshot.saved_at)}
-                          </p>
-                          <p className="mt-0.5 text-xs text-slate-500">
-                            {snapshot.changes_from_previous} change{snapshot.changes_from_previous !== 1 ? "s" : ""} from previous
-                          </p>
-                          {/* Show user's note if provided */}
-                          {snapshot.note && (
-                            <p className="mt-2 rounded border border-slate-700/50 bg-slate-950/50 px-2 py-1 text-xs italic text-slate-300">
-                              📝 {snapshot.note}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (loadingSnapshot) return;
+                              travelToSnapshot(snapshot.id);
+                              setShowHistory(false);
+                            }}
+                            disabled={loadingSnapshot}
+                            className="mt-1 block w-full text-left disabled:cursor-not-allowed"
+                          >
+                            <p className="text-xs text-slate-400">
+                              <span className="font-semibold text-emerald-400/80">
+                                By {snapshot.author || "Anonymous"}
+                              </span>
+                              <span className="mx-1.5 text-slate-600">·</span>
+                              {formatTimestamp(snapshot.saved_at)}
                             </p>
-                          )}
-                        </button>
+                            <p className="mt-0.5 text-xs text-slate-500">
+                              {snapshot.changes_from_previous} change{snapshot.changes_from_previous !== 1 ? "s" : ""} from previous
+                            </p>
+                            {/* Show user's note if provided */}
+                            {snapshot.note && (
+                              <p className="mt-2 rounded border border-slate-700/50 bg-slate-950/50 px-2 py-1 text-xs italic text-slate-300">
+                                📝 {snapshot.note}
+                              </p>
+                            )}
+                          </button>
+                        </div>
                       );
                     })}
                 </div>
