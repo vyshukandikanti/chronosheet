@@ -37,6 +37,11 @@ import {
   broadcastNewSnapshot,
   type LiveSnapshot,
 } from "./lib/useLiveSnapshots";
+import {
+  useLiveCellEdits,
+  broadcastCellEdit,
+  type CellEdit,
+} from "./lib/useLiveCellEdits";
 
 // The shape of the response we get from the backend after upload
 type CellValue = string | number | boolean | null;
@@ -866,6 +871,50 @@ function SpreadsheetView({
     // Light up the red dot if the panel isn't currently open
     setHasUnseenSnapshots((prev) => prev || !showHistory);
   });
+
+  // ====================================================
+  // PHASE 5 — LIVE CELL EDITS
+  // ====================================================
+  // Set of "row-col" keys that just changed due to a remote edit.
+  // Used to briefly pulse the cell so users notice live changes.
+  const [remotelyEditedCells, setRemotelyEditedCells] = useState<Set<string>>(
+    new Set(),
+  );
+
+  // Subscribe to live cell edits from other users on this filename.
+  useLiveCellEdits(data.filename, (edit: CellEdit) => {
+    // Apply the edit to our local data
+    setEditedData((previous) => {
+      // Bounds check — guard against stale broadcasts
+      if (edit.row < 0 || edit.row >= previous.length) return previous;
+      const targetRow = previous[edit.row];
+      if (!targetRow || edit.col < 0 || edit.col >= targetRow.length) {
+        return previous;
+      }
+      return previous.map((rowArr, rowIndex) =>
+        rowIndex === edit.row
+          ? rowArr.map((cellValue, colIndex) =>
+              colIndex === edit.col ? edit.value : cellValue,
+            )
+          : rowArr,
+      );
+    });
+
+    // Pulse the cell briefly so the change catches the eye
+    const cellKey = `${edit.row}-${edit.col}`;
+    setRemotelyEditedCells((prev) => {
+      const next = new Set(prev);
+      next.add(cellKey);
+      return next;
+    });
+    setTimeout(() => {
+      setRemotelyEditedCells((prev) => {
+        const next = new Set(prev);
+        next.delete(cellKey);
+        return next;
+      });
+    }, 1500);
+  });
   // If we are viewing a past snapshot, this holds its ID. Null means "current".
   const [viewingSnapshotId, setViewingSnapshotId] = useState<string | null>(null);
   // The data of the snapshot being viewed (so we can show it instead of edited data)
@@ -1013,6 +1062,23 @@ function SpreadsheetView({
           : rowArr
       )
     );
+
+    // ====================================================
+    // PHASE 5 — Broadcast this edit to other viewers
+    // ====================================================
+    // Only broadcast if the value actually changed (don't spam the channel)
+    if (inputValue !== previousCellValue && data.filename) {
+      broadcastCellEdit(data.filename, {
+        row,
+        col,
+        value: inputValue,
+        author: userName || "Anonymous",
+        editedAt: new Date().toISOString(),
+        sheetName: data.sheet_name,
+      }).catch((error) => {
+        console.warn("[Phase 5] Cell edit broadcast failed:", error);
+      });
+    }
 
     // Decide whether to mark this cell as modified
     const cellKey = `${row}-${col}`;
@@ -2690,6 +2756,9 @@ function SpreadsheetView({
                         };
                       }
 
+                      // Phase 5 — pulse highlight if this cell was just edited by another user
+                      const isRemotelyEdited = remotelyEditedCells.has(cellKey);
+
                       return (
                         <td
                           key={colIndex}
@@ -2697,7 +2766,9 @@ function SpreadsheetView({
                           onClick={() => !isReadOnly && !isEditing && startEditing(rowIndex, colIndex)}
                           style={cellStickyStyle}
                           className={`min-w-[120px] px-4 py-3 transition-colors ${(isFrozenRow || isFrozenCol) ? "bg-slate-900" : ""} ${
-                            isReadOnly
+                            isRemotelyEdited
+                              ? "bg-sky-500/30 text-white ring-2 ring-inset ring-sky-400 animate-pulse"
+                              : isReadOnly
                               ? isDiffCell
                                 ? "cursor-default bg-yellow-500/15 text-yellow-100 ring-1 ring-inset ring-yellow-500/50"
                                 : "cursor-default text-purple-100/90"
