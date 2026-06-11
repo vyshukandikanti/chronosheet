@@ -3,16 +3,20 @@
 // React hook that broadcasts the current user's presence to other users
 // in real time via Supabase Realtime.
 //
-// What it does:
-// - When you mount this hook, it joins a "presence channel" on Supabase
-// - It tells the channel "I'm online! Here's my name + avatar info"
-// - It listens for OTHER users joining or leaving the channel
-// - Returns the list of everyone currently online (including you)
+// PER-SHEET ROOMS:
+// Each spreadsheet (by filename) is its own "room". Two users with the
+// SAME filename open will see each other. Different filenames = separate
+// rooms. No filename = no presence at all.
+//
+// Example:
+//   usePresence("vyshu.xlsx")   → join the vyshu.xlsx room
+//   usePresence("sales.xlsx")   → join the sales.xlsx room
+//   usePresence(null)           → don't join any room (idle)
 //
 // When you close the tab, your unmount cleans up — others see you leave.
 //
 // Behind the scenes, Supabase uses WebSockets to push these events live.
-// The same pattern powers "X people are viewing this product" on Amazon!
+// The same pattern powers "X people viewing this Google Doc" indicators!
 
 "use client";
 
@@ -29,17 +33,30 @@ export type OnlineUser = {
   isYou: boolean;        // Are they YOU? (so we can highlight)
 };
 
-// The channel name — everyone on the app joins the same channel.
-// Later (Phase 4+) we'll have per-document channels for shared editing.
-const GLOBAL_CHANNEL = "chronosheet-global-presence";
+// Builds the actual channel name from a filename. Replaces spaces and
+// special characters to keep it Supabase-channel-safe.
+function buildChannelName(filename: string): string {
+  const safe = filename.toLowerCase().replace(/[^a-z0-9.\-_]/g, "_");
+  return `sheet:${safe}`;
+}
 
-export function usePresence() {
+/**
+ * Subscribe to presence for the given spreadsheet "room".
+ *
+ * @param channelKey - The filename (or any string) to join. Pass null
+ *                    when you don't want to track presence at all.
+ */
+export function usePresence(channelKey: string | null) {
   const { user, loading: authLoading } = useAuth();
   const [onlineUsers, setOnlineUsers] = useState<OnlineUser[]>([]);
 
   useEffect(() => {
-    // Skip if Supabase isn't configured or auth is still loading
-    if (!isSupabaseReady || authLoading) return;
+    // Skip if there's no channel key, Supabase isn't configured,
+    // or auth is still loading
+    if (!channelKey || !isSupabaseReady || authLoading) {
+      setOnlineUsers([]);
+      return;
+    }
 
     // Figure out who WE are
     const myId = crypto.randomUUID();
@@ -49,8 +66,9 @@ export function usePresence() {
       "Guest";
     const myEmail = user?.email;
 
-    // Create a channel — everyone using this same key sees each other
-    const channel = supabase.channel(GLOBAL_CHANNEL, {
+    // Create a channel for THIS specific spreadsheet
+    const channelName = buildChannelName(channelKey);
+    const channel = supabase.channel(channelName, {
       config: {
         presence: { key: myId }, // unique per tab
       },
@@ -106,7 +124,7 @@ export function usePresence() {
       channel.untrack();
       supabase.removeChannel(channel);
     };
-  }, [user, authLoading]);
+  }, [channelKey, user, authLoading]);
 
   return onlineUsers;
 }

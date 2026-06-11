@@ -17,6 +17,7 @@
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
+import OnlineUsers from "../components/OnlineUsers";
 
 // Backend URL — uses env var in production, falls back to localhost in dev
 const BACKEND_URL =
@@ -155,12 +156,16 @@ function SharePageContent() {
             <span>👀</span>
             <span>Viewing shared snapshot — read only</span>
           </div>
-          <Link
-            href="/"
-            className="text-xs bg-emerald-500 hover:bg-emerald-600 text-white font-semibold px-4 py-1.5 rounded-full transition"
-          >
-            Try ChronoSheet →
-          </Link>
+          <div className="flex items-center gap-3">
+            {/* Live presence — everyone viewing this same filename */}
+            <OnlineUsers channelKey={snapshot?.filename || null} />
+            <Link
+              href="/"
+              className="text-xs bg-emerald-500 hover:bg-emerald-600 text-white font-semibold px-4 py-1.5 rounded-full transition"
+            >
+              Try ChronoSheet →
+            </Link>
+          </div>
         </div>
       </div>
 

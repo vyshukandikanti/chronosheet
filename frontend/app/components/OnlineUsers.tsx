@@ -1,7 +1,11 @@
 // app/components/OnlineUsers.tsx
 // ================================
-// Shows a row of avatars for everyone currently using ChronoSheet.
-// Each avatar = one user (or guest tab). Hover for the name.
+// Shows a row of avatars for everyone currently in the SAME spreadsheet
+// "room" (rooms are scoped by filename). Hover an avatar for the name.
+//
+// Usage:
+//   <OnlineUsers channelKey="vyshu.xlsx" />   // only people on vyshu.xlsx
+//   <OnlineUsers channelKey={null} />          // not in any room; renders nothing
 //
 // This is the "social proof" element — visitors see "real people are
 // here right now" which builds trust and excitement!
@@ -37,13 +41,18 @@ function getColorForUser(user: OnlineUser): string {
 // Maximum number of avatars to show before collapsing into "+N more"
 const MAX_AVATARS = 5;
 
-export default function OnlineUsers() {
-  const onlineUsers = usePresence();
+type Props = {
+  // The "room" key — usually a filename. Pass null to hide entirely.
+  channelKey: string | null;
+};
+
+export default function OnlineUsers({ channelKey }: Props) {
+  const onlineUsers = usePresence(channelKey);
   const [showAll, setShowAll] = useState(false);
 
-  // If presence isn't ready or nobody is online (shouldn't happen for "you"),
-  // don't render anything yet
-  if (onlineUsers.length === 0) return null;
+  // If there's no room or no users (shouldn't happen for "you" when in a room),
+  // don't render anything
+  if (!channelKey || onlineUsers.length === 0) return null;
 
   const visibleUsers = showAll ? onlineUsers : onlineUsers.slice(0, MAX_AVATARS);
   const hiddenCount = onlineUsers.length - visibleUsers.length;
@@ -86,8 +95,8 @@ export default function OnlineUsers() {
       {/* Count label */}
       <span className="hidden sm:inline text-xs text-slate-400">
         {onlineUsers.length === 1
-          ? "Just you"
-          : `${onlineUsers.length} online`}
+          ? "Just you on this sheet"
+          : `${onlineUsers.length} on this sheet`}
       </span>
     </div>
   );

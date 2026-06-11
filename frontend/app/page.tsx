@@ -230,7 +230,7 @@ export default function Home() {
       <header className="relative z-10 flex items-center justify-between px-8 py-6">
         <Brand />
         <div className="flex items-center gap-5">
-          <OnlineUsers />
+          {/* No room joined on the landing page — only inside a spreadsheet */}
           <BackendStatus />
           <AuthBadge />
           <button
@@ -1958,7 +1958,8 @@ function SpreadsheetView({
           <div className="flex flex-wrap items-center gap-3">
 
             {/* ONLINE USERS — live presence indicator (Phase 3 — Real-Time) */}
-            <OnlineUsers />
+            {/* Channel = filename, so two people opening the same filename see each other */}
+            <OnlineUsers channelKey={data.filename || null} />
 
             {/* AUTH BADGE — Sign in / Sign up when logged out, profile + Sign out when logged in */}
             <AuthBadge />
