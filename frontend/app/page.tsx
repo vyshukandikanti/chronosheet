@@ -27,8 +27,10 @@ import {
   YAxis,
 } from "recharts";
 
+import Link from "next/link";
 import BackendStatus from "./components/BackendStatus";
 import AuthBadge from "./components/AuthBadge";
+import { useAuth } from "./lib/AuthProvider";
 
 // The shape of the response we get from the backend after upload
 type CellValue = string | number | boolean | null;
@@ -75,6 +77,12 @@ export default function Home() {
   const [uploading, setUploading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // ===== AUTH STATE =====
+  // Read who is signed in. The upload button is gated behind login.
+  const { user: authUser, loading: authLoading } = useAuth();
+  // Controls the "Please sign in to upload" modal
+  const [showLoginPrompt, setShowLoginPrompt] = useState(false);
 
   // ===== USER IDENTITY (persists in browser) =====
   // Who is editing? Stored in localStorage so it persists across visits.
@@ -133,6 +141,12 @@ export default function Home() {
 
   // ===== HANDLERS =====
   const handleUploadClick = () => {
+    // GATE: Require login before opening the file picker.
+    // If the user isn't signed in, show a friendly prompt instead.
+    if (!authLoading && !authUser) {
+      setShowLoginPrompt(true);
+      return;
+    }
     fileInputRef.current?.click();
   };
 
@@ -271,6 +285,11 @@ export default function Home() {
                 <>
                   <span className="h-4 w-4 animate-spin rounded-full border-2 border-slate-950 border-t-transparent" />
                   <span>Uploading...</span>
+                </>
+              ) : !authLoading && !authUser ? (
+                <>
+                  <span>🔒</span>
+                  <span>Sign in to Upload</span>
                 </>
               ) : (
                 <>
@@ -472,6 +491,49 @@ export default function Home() {
             </div>
           </div>
         </>
+      )}
+
+      {/* ===== LOGIN-REQUIRED MODAL ===== */}
+      {/* Shown when a guest clicks "Upload Spreadsheet" */}
+      {showLoginPrompt && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm px-4">
+          <div className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-8 shadow-2xl">
+            <div className="text-center">
+              <div className="mb-4 text-5xl">🔒</div>
+              <h2 className="mb-2 text-2xl font-bold text-white">
+                Sign in to continue
+              </h2>
+              <p className="mb-6 text-sm text-slate-400">
+                Uploading a spreadsheet requires an account so we can save
+                your snapshots and connect them to YOU forever.
+              </p>
+
+              <div className="flex flex-col gap-3">
+                <Link
+                  href="/signup"
+                  className="rounded-lg bg-emerald-500 hover:bg-emerald-600 px-4 py-2.5 font-semibold text-white transition"
+                  onClick={() => setShowLoginPrompt(false)}
+                >
+                  Create a free account
+                </Link>
+                <Link
+                  href="/login"
+                  className="rounded-lg border border-slate-700 hover:border-emerald-500/40 hover:text-emerald-300 px-4 py-2.5 font-medium text-slate-300 transition"
+                  onClick={() => setShowLoginPrompt(false)}
+                >
+                  Sign in instead
+                </Link>
+                <button
+                  type="button"
+                  onClick={() => setShowLoginPrompt(false)}
+                  className="mt-2 text-xs text-slate-500 hover:text-slate-400 transition"
+                >
+                  Maybe later
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
     </div>
