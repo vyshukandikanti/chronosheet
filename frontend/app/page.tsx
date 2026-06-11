@@ -825,6 +825,14 @@ function SpreadsheetView({
   };
   const [snapshotsList, setSnapshotsList] = useState<SnapshotSummary[]>([]);
 
+  // Is the history panel open?
+  const [showHistory, setShowHistory] = useState(false);
+
+  // Phase 4 — unread indicator: red dot on the History button when
+  // another user saves a snapshot AND our panel is closed. Cleared
+  // the moment the user opens the panel.
+  const [hasUnseenSnapshots, setHasUnseenSnapshots] = useState(false);
+
   // ====================================================
   // PHASE 4 — LIVE SNAPSHOT UPDATES
   // ====================================================
@@ -855,10 +863,9 @@ function SpreadsheetView({
       text: `🆕 ${snapshot.author || "Someone"} just saved a snapshot!`,
     });
     setTimeout(() => setToast(null), 4000);
+    // Light up the red dot if the panel isn't currently open
+    setHasUnseenSnapshots((prev) => prev || !showHistory);
   });
-
-  // Is the history panel open?
-  const [showHistory, setShowHistory] = useState(false);
   // If we are viewing a past snapshot, this holds its ID. Null means "current".
   const [viewingSnapshotId, setViewingSnapshotId] = useState<string | null>(null);
   // The data of the snapshot being viewed (so we can show it instead of edited data)
@@ -2169,9 +2176,14 @@ function SpreadsheetView({
             </button>
 
             {/* HISTORY BUTTON — opens the time travel panel */}
+            {/* Red dot appears when someone else saved while panel was closed */}
             <button
-              onClick={() => setShowHistory((open) => !open)}
-              className={`flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium transition-colors ${
+              onClick={() => {
+                setShowHistory((open) => !open);
+                // Clear the "unseen" indicator the moment they check
+                setHasUnseenSnapshots(false);
+              }}
+              className={`relative flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium transition-colors ${
                 showHistory
                   ? "border-purple-500/50 bg-purple-500/15 text-purple-300"
                   : "border-slate-700 bg-slate-900 text-slate-200 hover:border-purple-500/40 hover:text-purple-300"
@@ -2182,6 +2194,13 @@ function SpreadsheetView({
               {snapshotsList.length > 0 && (
                 <span className="ml-1 rounded-full bg-purple-500/30 px-2 py-0.5 text-xs font-bold text-purple-200">
                   {snapshotsList.length}
+                </span>
+              )}
+              {/* RED DOT — unread snapshot from another user (Phase 4) */}
+              {hasUnseenSnapshots && !showHistory && (
+                <span className="absolute -top-1 -right-1 flex h-3 w-3">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-400 opacity-75" />
+                  <span className="relative inline-flex h-3 w-3 rounded-full border border-slate-900 bg-red-500" />
                 </span>
               )}
             </button>
