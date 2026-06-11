@@ -32,6 +32,11 @@ import BackendStatus from "./components/BackendStatus";
 import AuthBadge from "./components/AuthBadge";
 import OnlineUsers from "./components/OnlineUsers";
 import { useAuth } from "./lib/AuthProvider";
+import {
+  useLiveSnapshots,
+  broadcastNewSnapshot,
+  type LiveSnapshot,
+} from "./lib/useLiveSnapshots";
 
 // The shape of the response we get from the backend after upload
 type CellValue = string | number | boolean | null;
@@ -819,6 +824,39 @@ function SpreadsheetView({
     author?: string;
   };
   const [snapshotsList, setSnapshotsList] = useState<SnapshotSummary[]>([]);
+
+  // ====================================================
+  // PHASE 4 — LIVE SNAPSHOT UPDATES
+  // ====================================================
+  // Subscribe to the broadcast channel for this filename. When ANOTHER
+  // user saves a snapshot on the same file, we receive it here and
+  // prepend it to our list — no refresh, no refetch.
+  useLiveSnapshots(data.filename, (snapshot: LiveSnapshot) => {
+    setSnapshotsList((prev) => {
+      // Guard against duplicates (e.g. if we somehow receive our own broadcast)
+      if (prev.some((s) => s.id === snapshot.id)) return prev;
+      // Backend list is in chronological order; new snapshot goes at the end
+      const incoming: SnapshotSummary = {
+        id: snapshot.id,
+        filename: snapshot.filename,
+        sheet_name: snapshot.sheet_name ?? "",
+        saved_at: snapshot.saved_at,
+        row_count: snapshot.row_count ?? 0,
+        column_count: snapshot.column_count ?? 0,
+        changes_from_previous: snapshot.changes_from_previous ?? 0,
+        note: snapshot.note ?? null,
+        author: snapshot.author ?? "Anonymous",
+      };
+      return [...prev, incoming];
+    });
+    // Brief notification so the user sees that someone else just saved
+    setToast({
+      kind: "success",
+      text: `🆕 ${snapshot.author || "Someone"} just saved a snapshot!`,
+    });
+    setTimeout(() => setToast(null), 4000);
+  });
+
   // Is the history panel open?
   const [showHistory, setShowHistory] = useState(false);
   // If we are viewing a past snapshot, this holds its ID. Null means "current".
@@ -1462,6 +1500,47 @@ function SpreadsheetView({
 
       // Make the toast disappear after 4 seconds
       setTimeout(() => setToast(null), 4000);
+
+      // ====================================================
+      // PHASE 4 — Broadcast to other viewers of the same file
+      // ====================================================
+      // Anyone else with this filename open receives this snapshot
+      // and prepends it to their history list — live, no refresh.
+      const broadcastPayload: LiveSnapshot = {
+        id: result.snapshot_id,
+        filename: data.filename,
+        sheet_name: data.sheet_name,
+        saved_at: result.saved_at,
+        author: userName || "Anonymous",
+        note: note && note.trim() !== "" ? note.trim() : null,
+        changes_from_previous: modifiedCells.size,
+        row_count: editedData.length,
+        column_count: editedData[0]?.length ?? 0,
+      };
+      // Don't await — fire-and-forget so saving feels instant
+      broadcastNewSnapshot(data.filename, broadcastPayload).catch((error) => {
+        console.warn("[Phase 4] Snapshot broadcast failed:", error);
+      });
+
+      // Also add to our OWN list immediately (the broadcast only
+      // notifies other tabs; our own state needs to be set here).
+      setSnapshotsList((prev) => {
+        if (prev.some((s) => s.id === result.snapshot_id)) return prev;
+        return [
+          ...prev,
+          {
+            id: result.snapshot_id,
+            filename: data.filename,
+            sheet_name: data.sheet_name,
+            saved_at: result.saved_at,
+            row_count: editedData.length,
+            column_count: editedData[0]?.length ?? 0,
+            changes_from_previous: modifiedCells.size,
+            note: note && note.trim() !== "" ? note.trim() : null,
+            author: userName || "Anonymous",
+          },
+        ];
+      });
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Could not save snapshot.";
