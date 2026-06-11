@@ -30,6 +30,7 @@ import {
 import Link from "next/link";
 import BackendStatus from "./components/BackendStatus";
 import AuthBadge from "./components/AuthBadge";
+import OnlineUsers from "./components/OnlineUsers";
 import { useAuth } from "./lib/AuthProvider";
 
 // The shape of the response we get from the backend after upload
@@ -229,6 +230,7 @@ export default function Home() {
       <header className="relative z-10 flex items-center justify-between px-8 py-6">
         <Brand />
         <div className="flex items-center gap-5">
+          <OnlineUsers />
           <BackendStatus />
           <AuthBadge />
           <button
@@ -1954,6 +1956,9 @@ function SpreadsheetView({
         <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4">
           <Brand />
           <div className="flex flex-wrap items-center gap-3">
+
+            {/* ONLINE USERS — live presence indicator (Phase 3 — Real-Time) */}
+            <OnlineUsers />
 
             {/* AUTH BADGE — Sign in / Sign up when logged out, profile + Sign out when logged in */}
             <AuthBadge />
