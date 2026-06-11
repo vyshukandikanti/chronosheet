@@ -22,20 +22,22 @@ import Link from "next/link";
 const BACKEND_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
 
-// The shape of a snapshot row (loose typing — snapshots store flexible data)
+// Cell types (matches what the backend returns)
+type Cell = string | number | boolean | null;
+
+// The shape of a snapshot row from the backend
 type Snapshot = {
   id?: string;
-  name?: string;
   filename?: string;
-  created_at?: string;
-  timestamp?: string;
-  sheets?: Array<{
-    sheet_name: string;
-    headers: string[];
-    rows: (string | number | null)[][];
-  }>;
-  // Older snapshots may store data differently
-  data?: unknown;
+  sheet_name?: string;
+  saved_at?: string;
+  data?: Cell[][];
+  row_count?: number;
+  column_count?: number;
+  changes_from_previous?: number;
+  note?: string | null;
+  author?: string | null;
+  // Allow extra fields without TypeScript complaining
   [key: string]: unknown;
 };
 
@@ -47,7 +49,6 @@ function SharePageContent() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [activeSheetIndex, setActiveSheetIndex] = useState(0);
 
   useEffect(() => {
     // No ID in the URL — show an error
@@ -116,15 +117,25 @@ function SharePageContent() {
   }
 
   // ---------- Snapshot loaded ----------
-  // Figure out which sheets to display
-  const sheets = snapshot?.sheets ?? [];
-  const hasSheets = sheets.length > 0;
-  const currentSheet = hasSheets ? sheets[activeSheetIndex] : null;
+  // The data is a 2D array — first row is treated as headers (like Excel)
+  const data = snapshot?.data ?? [];
+  const hasData = data.length > 0;
+  const headers = hasData ? data[0] : [];
+  const rows = hasData ? data.slice(1) : [];
+
+  // Helper to render a cell value safely
+  const renderCell = (value: Cell): string => {
+    if (value === null || value === undefined) return "";
+    if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
+    return String(value);
+  };
 
   // Display a friendly name + timestamp
-  const displayName =
-    snapshot?.name || snapshot?.filename || "Untitled Snapshot";
-  const timestamp = snapshot?.created_at || snapshot?.timestamp;
+  const displayName = snapshot?.filename || "Untitled Snapshot";
+  const sheetName = snapshot?.sheet_name;
+  const timestamp = snapshot?.saved_at;
+  const author = snapshot?.author || "Anonymous";
+  const note = snapshot?.note;
   const formattedTime = timestamp
     ? new Date(timestamp).toLocaleString("en-IN", {
         day: "2-digit",
@@ -157,32 +168,29 @@ function SharePageContent() {
       <div className="max-w-7xl mx-auto px-4 py-6">
         <div className="mb-6">
           <h1 className="text-3xl font-bold text-white mb-1">{displayName}</h1>
-          {formattedTime && (
-            <p className="text-slate-400 text-sm">Saved on {formattedTime}</p>
+          <div className="flex items-center gap-2 flex-wrap text-sm text-slate-400">
+            {sheetName && (
+              <span className="rounded-full bg-slate-800 px-3 py-1 text-xs text-emerald-300">
+                📑 {sheetName}
+              </span>
+            )}
+            <span>By <span className="text-emerald-400">{author}</span></span>
+            {formattedTime && (
+              <>
+                <span className="text-slate-600">·</span>
+                <span>Saved on {formattedTime}</span>
+              </>
+            )}
+          </div>
+          {note && (
+            <p className="mt-3 inline-block rounded-lg border border-slate-700/50 bg-slate-800/50 px-3 py-2 text-sm italic text-slate-300">
+              📝 {note}
+            </p>
           )}
         </div>
 
-        {/* Sheet tabs (if multiple sheets) */}
-        {hasSheets && sheets.length > 1 && (
-          <div className="flex gap-2 mb-4 overflow-x-auto pb-2">
-            {sheets.map((sheet, index) => (
-              <button
-                key={sheet.sheet_name}
-                onClick={() => setActiveSheetIndex(index)}
-                className={`px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition ${
-                  index === activeSheetIndex
-                    ? "bg-emerald-500 text-white"
-                    : "bg-slate-800 text-slate-300 hover:bg-slate-700"
-                }`}
-              >
-                {sheet.sheet_name}
-              </button>
-            ))}
-          </div>
-        )}
-
         {/* Spreadsheet grid */}
-        {currentSheet ? (
+        {hasData ? (
           <div className="bg-slate-800 rounded-lg overflow-hidden border border-slate-700">
             <div className="overflow-auto max-h-[70vh]">
               <table className="min-w-full">
@@ -191,18 +199,18 @@ function SharePageContent() {
                     <th className="px-3 py-2 text-left text-xs font-semibold text-slate-300 border-b border-slate-600 w-12">
                       #
                     </th>
-                    {currentSheet.headers?.map((header, index) => (
+                    {headers.map((header, index) => (
                       <th
                         key={index}
                         className="px-3 py-2 text-left text-xs font-semibold text-slate-300 border-b border-slate-600 whitespace-nowrap"
                       >
-                        {header || `Column ${index + 1}`}
+                        {renderCell(header) || `Column ${index + 1}`}
                       </th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
-                  {currentSheet.rows?.map((row, rowIndex) => (
+                  {rows.map((row, rowIndex) => (
                     <tr
                       key={rowIndex}
                       className="hover:bg-slate-700/50 transition"
@@ -215,7 +223,7 @@ function SharePageContent() {
                           key={cellIndex}
                           className="px-3 py-2 text-sm text-slate-100 border-b border-slate-700 whitespace-nowrap"
                         >
-                          {cell ?? ""}
+                          {renderCell(cell)}
                         </td>
                       ))}
                     </tr>
@@ -224,8 +232,7 @@ function SharePageContent() {
               </table>
             </div>
             <div className="px-3 py-2 bg-slate-900 border-t border-slate-700 text-xs text-slate-500">
-              {currentSheet.rows?.length ?? 0} rows ×{" "}
-              {currentSheet.headers?.length ?? 0} columns
+              {rows.length} rows × {headers.length} columns
             </div>
           </div>
         ) : (
