@@ -28,6 +28,7 @@ import {
 } from "recharts";
 
 import BackendStatus from "./components/BackendStatus";
+import AuthBadge from "./components/AuthBadge";
 
 // The shape of the response we get from the backend after upload
 type CellValue = string | number | boolean | null;
@@ -215,6 +216,7 @@ export default function Home() {
         <Brand />
         <div className="flex items-center gap-5">
           <BackendStatus />
+          <AuthBadge />
           <button
             onClick={toggleTheme}
             className="rounded-full border border-slate-700 bg-slate-900 p-2 text-slate-300 hover:border-emerald-500/40 hover:text-emerald-300"
@@ -1890,6 +1892,9 @@ function SpreadsheetView({
         <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4">
           <Brand />
           <div className="flex flex-wrap items-center gap-3">
+
+            {/* AUTH BADGE — Sign in / Sign up when logged out, profile + Sign out when logged in */}
+            <AuthBadge />
 
             {/* THEME TOGGLE — sun/moon icon switches dark and light */}
             <button
