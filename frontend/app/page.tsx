@@ -572,6 +572,17 @@ function SpreadsheetView({
   theme: "dark" | "light";
   onToggleTheme: () => void;
 }) {
+  // ------ Auth-aware display name ------
+  // For all live broadcasts (cursors, edits, snapshots, leader), prefer
+  // the signed-in user's actual identity over the local ChronoSheet
+  // username. This way Alice's tab always shows up as "Alice" to others,
+  // even if her local userName field hasn't been updated yet.
+  const { user: authUser } = useAuth();
+  const authDisplayName =
+    (authUser?.user_metadata?.display_name as string | undefined) ||
+    authUser?.email?.split("@")[0];
+  const broadcastName = authDisplayName || userName || "Guest";
+
   // ------ Multi-sheet state ------
   // Which sheet (tab) is currently active?
   const [activeSheetIndex, setActiveSheetIndex] = useState(0);
@@ -885,7 +896,7 @@ function SpreadsheetView({
     isLocked,
     claim: claimLeadership,
     release: releaseLeadership,
-  } = useLeaderMode(data.filename, userName || "Guest");
+  } = useLeaderMode(data.filename, broadcastName);
 
   // ====================================================
   // PHASE 7 — LIVE CURSORS
@@ -893,7 +904,7 @@ function SpreadsheetView({
   // Broadcast our mouse position as a % of viewport size; receive others'
   const { remoteCursors, broadcastCursor } = useLiveCursors(
     data.filename,
-    userName || "Guest",
+    broadcastName,
   );
 
   // Track mouse position over the whole window — fires on every move
@@ -1117,7 +1128,7 @@ function SpreadsheetView({
         row,
         col,
         value: inputValue,
-        author: userName || "Anonymous",
+        author: broadcastName,
         editedAt: new Date().toISOString(),
         sheetName: data.sheet_name,
       });
