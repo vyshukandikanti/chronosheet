@@ -126,7 +126,6 @@ export default function SplashScreen() {
           ✨ Powered by Raft consensus and Artificial Intelligence
         </p>
       </div>
-        }
     </div>
   );
 }
