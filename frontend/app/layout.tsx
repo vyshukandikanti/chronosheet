@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Outfit } from "next/font/google";
 import "./globals.css";
 import { AuthProvider } from "./lib/AuthProvider";
+import SplashScreen from "./components/SplashScreen";
 
 // Outfit — modern geometric font that feels attractive and refined.
 // Highly readable for data-heavy interfaces. Used by premium SaaS products.
@@ -27,6 +28,7 @@ export default function RootLayout({
       className={`${outfit.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col font-sans">
+        <SplashScreen />
         <AuthProvider>{children}</AuthProvider>
       </body>
     </html>
