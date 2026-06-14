@@ -32,6 +32,7 @@ import BackendStatus from "./components/BackendStatus";
 import AuthBadge from "./components/AuthBadge";
 import OnlineUsers from "./components/OnlineUsers";
 import LiveCursors from "./components/LiveCursors";
+import LeaderModeToggle from "./components/LeaderModeToggle";
 import { useAuth } from "./lib/AuthProvider";
 import {
   useLiveSnapshots,
@@ -42,6 +43,7 @@ import {
   type CellEdit,
 } from "./lib/useLiveCellEdits";
 import { useLiveCursors } from "./lib/useLiveCursors";
+import { useLeaderMode } from "./lib/useLeaderMode";
 
 // The shape of the response we get from the backend after upload
 type CellValue = string | number | boolean | null;
@@ -874,6 +876,18 @@ function SpreadsheetView({
   });
 
   // ====================================================
+  // PHASE 8 — LEADER MODE (optional Raft-style lock)
+  // ====================================================
+  // The leader has exclusive edit rights; followers are read-only.
+  const {
+    leader: leaderState,
+    isLeader,
+    isLocked,
+    claim: claimLeadership,
+    release: releaseLeadership,
+  } = useLeaderMode(data.filename, userName || "Guest");
+
+  // ====================================================
   // PHASE 7 — LIVE CURSORS
   // ====================================================
   // Broadcast our mouse position as a % of viewport size; receive others'
@@ -1059,6 +1073,15 @@ function SpreadsheetView({
 
   // ------ Editing handlers ------
   const startEditing = (row: number, col: number) => {
+    // Phase 8 — Leader Mode: followers can't edit
+    if (isLocked) {
+      setToast({
+        kind: "error",
+        text: `🔒 ${leaderState?.leaderName ?? "Someone"} is leading — view only`,
+      });
+      setTimeout(() => setToast(null), 3000);
+      return;
+    }
     setEditingCell({ row, col });
     setLastActive({ row, col }); // Remember this position for toolbar operations
     setInputValue(String(editedData[row][col] ?? ""));
@@ -2131,6 +2154,15 @@ function SpreadsheetView({
             {/* ONLINE USERS — live presence indicator (Phase 3 — Real-Time) */}
             {/* Channel = filename, so two people opening the same filename see each other */}
             <OnlineUsers channelKey={data.filename || null} />
+
+            {/* LEADER MODE TOGGLE — Phase 8 (Raft-inspired exclusive control) */}
+            <LeaderModeToggle
+              active={leaderState !== null}
+              isLeader={isLeader}
+              leaderName={leaderState?.leaderName ?? null}
+              onClaim={claimLeadership}
+              onRelease={releaseLeadership}
+            />
 
             {/* AUTH BADGE — Sign in / Sign up when logged out, profile + Sign out when logged in */}
             <AuthBadge />
