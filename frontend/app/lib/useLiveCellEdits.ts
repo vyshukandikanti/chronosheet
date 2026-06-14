@@ -3,22 +3,15 @@
 // Real-time cell editing — Phase 5.
 //
 // When User A types a new value into B5 and presses Enter, every other
-// user with the same file open sees B5 change INSTANTLY. The cell
-// briefly pulses to draw attention to the change.
+// user with the same file open sees B5 change INSTANTLY.
 //
-// Strategy:
-// - Each spreadsheet gets a broadcast channel keyed by filename
-// - Edits broadcast: "cell:edited" with { row, col, value, author }
-// - Receivers update their local state + pulse the cell
-//
-// Conflict policy (for this phase): last write wins.
-// Two users editing the same cell at the same millisecond — whoever's
-// broadcast lands last is the final value. That's fine for now;
-// Phase 6 (Yjs) brings true conflict-free merging.
+// FIX (v2): Uses ONE persistent channel per file for both sending AND
+// receiving. The previous version created separate channels which is
+// why broadcasts weren't reaching other tabs.
 
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import type { RealtimeChannel } from "@supabase/supabase-js";
 import { supabase, isSupabaseReady } from "./supabase";
 
@@ -29,7 +22,7 @@ export type CellEdit = {
   value: string | number | boolean | null;
   author: string;          // Display name of the editor
   editedAt: string;        // ISO timestamp
-  sheetName?: string;      // Which sheet within the workbook (multi-sheet support)
+  sheetName?: string;      // Which sheet within the workbook
 };
 
 // Custom event used on the broadcast channel
@@ -42,30 +35,44 @@ function buildEditsChannel(filename: string): string {
 }
 
 /**
- * Subscribe to live cell edits for a given filename.
+ * Subscribe to live cell edits AND get a broadcast function.
+ * One persistent channel for both directions.
  *
  * @param filename - The file you have open. null = no subscription.
- * @param onCellEdited - Called when ANOTHER user edits a cell on this
- *                       file. NOT echoed for your own edits.
+ * @param onCellEdited - Called when ANOTHER user edits a cell.
+ * @returns A broadcast function — call it to send your edit to others.
  */
 export function useLiveCellEdits(
   filename: string | null,
   onCellEdited: (edit: CellEdit) => void,
-) {
+): (edit: CellEdit) => void {
   // Keep the callback fresh without forcing re-subscription
   const callbackRef = useRef(onCellEdited);
   useEffect(() => {
     callbackRef.current = onCellEdited;
   }, [onCellEdited]);
 
+  // Keep the channel in a ref so the broadcast function can use it
+  const channelRef = useRef<RealtimeChannel | null>(null);
+
   useEffect(() => {
-    if (!filename || !isSupabaseReady) return;
+    if (!filename || !isSupabaseReady) {
+      channelRef.current = null;
+      return;
+    }
 
     const channelName = buildEditsChannel(filename);
-    const channel: RealtimeChannel = supabase.channel(channelName);
+    // IMPORTANT: pass config so broadcast self-echo is OFF (default).
+    // Without this, your own broadcasts might come back to you.
+    const channel: RealtimeChannel = supabase.channel(channelName, {
+      config: {
+        broadcast: { self: false, ack: false },
+      },
+    });
 
     channel
       .on("broadcast", { event: EVENT_CELL_EDITED }, ({ payload }) => {
+        console.log("[Phase 5] Received cell edit:", payload);
         if (
           payload &&
           typeof payload === "object" &&
@@ -75,39 +82,33 @@ export function useLiveCellEdits(
           callbackRef.current(payload as CellEdit);
         }
       })
-      .subscribe();
+      .subscribe((status) => {
+        console.log(`[Phase 5] Channel "${channelName}" status:`, status);
+        if (status === "SUBSCRIBED") {
+          channelRef.current = channel;
+        }
+      });
 
     return () => {
+      channelRef.current = null;
       supabase.removeChannel(channel);
     };
   }, [filename]);
-}
 
-/**
- * Broadcast a cell edit to other viewers of the same filename.
- * Fire-and-forget — call after you've already updated your local state.
- *
- * Does NOT echo back to yourself.
- */
-export async function broadcastCellEdit(
-  filename: string,
-  edit: CellEdit,
-): Promise<void> {
-  if (!isSupabaseReady) return;
-
-  const channel = supabase.channel(buildEditsChannel(filename));
-
-  await new Promise<void>((resolve) => {
-    channel.subscribe((status) => {
-      if (status === "SUBSCRIBED") resolve();
+  // The broadcast function uses the persistent channel
+  const broadcast = useCallback((edit: CellEdit) => {
+    const channel = channelRef.current;
+    if (!channel) {
+      console.warn("[Phase 5] Tried to broadcast but channel not ready yet");
+      return;
+    }
+    console.log("[Phase 5] Broadcasting cell edit:", edit);
+    channel.send({
+      type: "broadcast",
+      event: EVENT_CELL_EDITED,
+      payload: edit,
     });
-  });
+  }, []);
 
-  await channel.send({
-    type: "broadcast",
-    event: EVENT_CELL_EDITED,
-    payload: edit,
-  });
-
-  await supabase.removeChannel(channel);
+  return broadcast;
 }

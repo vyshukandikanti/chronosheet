@@ -2,29 +2,17 @@
 // ============================
 // Real-time snapshot updates — Phase 4.
 //
-// When User A saves a snapshot on `vyshu.xlsx`, every other user who
-// has `vyshu.xlsx` open sees that snapshot appear in their history
-// list INSTANTLY, with no refresh.
-//
-// How it works:
-// 1. Each spreadsheet has its own Supabase Realtime "broadcast" channel
-// 2. After a successful save, the saver broadcasts "snapshot:created"
-//    with the new snapshot's data
-// 3. Every other client listening on that channel receives it and
-//    prepends it to their list
-// 4. Result: everyone's snapshot history stays in sync
-//
-// No database replication setup needed — uses Supabase's broadcast
-// feature which works out of the box.
+// FIX (v2): Uses ONE persistent channel per file for both sending AND
+// receiving. The previous version created separate channels which is
+// why broadcasts weren't reliably reaching other tabs.
 
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import type { RealtimeChannel } from "@supabase/supabase-js";
 import { supabase, isSupabaseReady } from "./supabase";
 
 // The shape of a snapshot as the list panel shows it.
-// (Matches what the backend's /save-snapshot returns.)
 export type LiveSnapshot = {
   id: string;
   filename: string;
@@ -33,7 +21,6 @@ export type LiveSnapshot = {
   author?: string | null;
   note?: string | null;
   changes_from_previous?: number;
-  // Optional full data; usually omitted for "list" broadcasts
   data?: unknown;
   row_count?: number;
   column_count?: number;
@@ -49,74 +36,83 @@ function buildEventsChannel(filename: string): string {
 }
 
 /**
- * Subscribe to live snapshot events for a given filename.
+ * Subscribe to live snapshot events AND get a broadcast function.
+ * One persistent channel for both directions.
  *
  * @param filename - The file you're viewing. null = no subscription.
- * @param onSnapshotCreated - Called when ANOTHER user saves a snapshot
- *                            on this file. Use it to update your local list.
- *                            NOTE: Your OWN saves don't echo back — call
- *                            broadcastNewSnapshot() yourself after saving.
+ * @param onSnapshotCreated - Called when ANOTHER user saves a snapshot.
+ * @returns A broadcast function — call after a successful save.
  */
 export function useLiveSnapshots(
   filename: string | null,
   onSnapshotCreated: (snapshot: LiveSnapshot) => void,
-) {
+): (snapshot: LiveSnapshot) => void {
   // Keep the callback fresh without forcing the subscription to tear down
   const callbackRef = useRef(onSnapshotCreated);
   useEffect(() => {
     callbackRef.current = onSnapshotCreated;
   }, [onSnapshotCreated]);
 
+  const channelRef = useRef<RealtimeChannel | null>(null);
+
   useEffect(() => {
-    if (!filename || !isSupabaseReady) return;
+    if (!filename || !isSupabaseReady) {
+      channelRef.current = null;
+      return;
+    }
 
     const channelName = buildEventsChannel(filename);
-    const channel: RealtimeChannel = supabase.channel(channelName);
+    const channel: RealtimeChannel = supabase.channel(channelName, {
+      config: {
+        broadcast: { self: false, ack: false },
+      },
+    });
 
     channel
       .on("broadcast", { event: EVENT_SNAPSHOT_CREATED }, ({ payload }) => {
-        // payload is the LiveSnapshot the other user broadcast
+        console.log("[Phase 4] Received snapshot:", payload);
         if (payload && typeof payload === "object" && "id" in payload) {
           callbackRef.current(payload as LiveSnapshot);
         }
       })
-      .subscribe();
+      .subscribe((status) => {
+        console.log(`[Phase 4] Snapshot channel "${channelName}" status:`, status);
+        if (status === "SUBSCRIBED") {
+          channelRef.current = channel;
+        }
+      });
 
     return () => {
+      channelRef.current = null;
       supabase.removeChannel(channel);
     };
   }, [filename]);
+
+  // The broadcast function uses the persistent channel
+  const broadcast = useCallback((snapshot: LiveSnapshot) => {
+    const channel = channelRef.current;
+    if (!channel) {
+      console.warn("[Phase 4] Tried to broadcast but channel not ready yet");
+      return;
+    }
+    console.log("[Phase 4] Broadcasting new snapshot:", snapshot);
+    channel.send({
+      type: "broadcast",
+      event: EVENT_SNAPSHOT_CREATED,
+      payload: snapshot,
+    });
+  }, []);
+
+  return broadcast;
 }
 
-/**
- * Broadcast a new snapshot to everyone else on this filename's channel.
- * Call this AFTER you've successfully saved to the backend.
- *
- * Important: this does NOT echo back to YOU — only OTHER subscribers
- * receive it. You should also add the snapshot to your own list locally.
- */
+// Legacy export kept for compatibility — but call the returned function
+// from useLiveSnapshots instead. This stays here so existing imports work.
 export async function broadcastNewSnapshot(
-  filename: string,
-  snapshot: LiveSnapshot,
+  _filename: string,
+  _snapshot: LiveSnapshot,
 ): Promise<void> {
-  if (!isSupabaseReady) return;
-
-  const channel = supabase.channel(buildEventsChannel(filename));
-
-  // Wait for the channel to subscribe before sending — otherwise the
-  // event is silently dropped.
-  await new Promise<void>((resolve) => {
-    channel.subscribe((status) => {
-      if (status === "SUBSCRIBED") resolve();
-    });
-  });
-
-  await channel.send({
-    type: "broadcast",
-    event: EVENT_SNAPSHOT_CREATED,
-    payload: snapshot,
-  });
-
-  // Clean up the temporary channel after sending
-  await supabase.removeChannel(channel);
+  console.warn(
+    "[Phase 4] broadcastNewSnapshot() is deprecated. Use the function returned by useLiveSnapshots() instead.",
+  );
 }

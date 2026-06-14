@@ -34,12 +34,10 @@ import OnlineUsers from "./components/OnlineUsers";
 import { useAuth } from "./lib/AuthProvider";
 import {
   useLiveSnapshots,
-  broadcastNewSnapshot,
   type LiveSnapshot,
 } from "./lib/useLiveSnapshots";
 import {
   useLiveCellEdits,
-  broadcastCellEdit,
   type CellEdit,
 } from "./lib/useLiveCellEdits";
 
@@ -844,7 +842,8 @@ function SpreadsheetView({
   // Subscribe to the broadcast channel for this filename. When ANOTHER
   // user saves a snapshot on the same file, we receive it here and
   // prepend it to our list — no refresh, no refetch.
-  useLiveSnapshots(data.filename, (snapshot: LiveSnapshot) => {
+  // The returned function is used to broadcast OUR saves to others.
+  const broadcastSnapshot = useLiveSnapshots(data.filename, (snapshot: LiveSnapshot) => {
     setSnapshotsList((prev) => {
       // Guard against duplicates (e.g. if we somehow receive our own broadcast)
       if (prev.some((s) => s.id === snapshot.id)) return prev;
@@ -882,7 +881,8 @@ function SpreadsheetView({
   );
 
   // Subscribe to live cell edits from other users on this filename.
-  useLiveCellEdits(data.filename, (edit: CellEdit) => {
+  // The returned function is used to broadcast OUR edits to others.
+  const broadcastEdit = useLiveCellEdits(data.filename, (edit: CellEdit) => {
     // Apply the edit to our local data
     setEditedData((previous) => {
       // Bounds check — guard against stale broadcasts
@@ -1068,15 +1068,13 @@ function SpreadsheetView({
     // ====================================================
     // Only broadcast if the value actually changed (don't spam the channel)
     if (inputValue !== previousCellValue && data.filename) {
-      broadcastCellEdit(data.filename, {
+      broadcastEdit({
         row,
         col,
         value: inputValue,
         author: userName || "Anonymous",
         editedAt: new Date().toISOString(),
         sheetName: data.sheet_name,
-      }).catch((error) => {
-        console.warn("[Phase 5] Cell edit broadcast failed:", error);
       });
     }
 
@@ -1579,7 +1577,7 @@ function SpreadsheetView({
       // ====================================================
       // Anyone else with this filename open receives this snapshot
       // and prepends it to their history list — live, no refresh.
-      const broadcastPayload: LiveSnapshot = {
+      broadcastSnapshot({
         id: result.snapshot_id,
         filename: data.filename,
         sheet_name: data.sheet_name,
@@ -1589,10 +1587,6 @@ function SpreadsheetView({
         changes_from_previous: modifiedCells.size,
         row_count: editedData.length,
         column_count: editedData[0]?.length ?? 0,
-      };
-      // Don't await — fire-and-forget so saving feels instant
-      broadcastNewSnapshot(data.filename, broadcastPayload).catch((error) => {
-        console.warn("[Phase 4] Snapshot broadcast failed:", error);
       });
 
       // Also add to our OWN list immediately (the broadcast only
