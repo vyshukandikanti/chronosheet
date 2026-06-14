@@ -69,39 +69,26 @@ export default function AuthBadge() {
   const initial = displayName.charAt(0).toUpperCase();
 
   const handleSignOut = () => {
-    if (signingOut) return;
-    setSigningOut(true);
-    setMenuOpen(false);
-
-    // NUCLEAR OPTION: clear every trace of the auth session ourselves,
-    // then hard-reload. We do not await anything — this MUST succeed
-    // even if the Supabase signOut call hangs.
-    if (typeof window !== "undefined") {
-      // 1. Wipe every Supabase localStorage key (they all start with "sb-")
-      try {
-        const localKeys = Object.keys(window.localStorage);
-        localKeys.forEach((key) => {
-          if (
-            key.startsWith("sb-") ||
-            key.toLowerCase().includes("supabase")
-          ) {
-            window.localStorage.removeItem(key);
-          }
-        });
-        // Also nuke session storage just in case
-        window.sessionStorage.clear();
-      } catch {
-        // ignore — we'll still force the reload
-      }
-
-      // 2. Fire-and-forget the Supabase API sign-out (sends a request
-      //    to invalidate the refresh token on the server side).
-      signOut().catch(() => {});
-
-      // 3. Force a hard reload to the landing page. This guarantees the
-      //    UI shows the signed-out state — no more being "stuck signed in".
-      window.location.replace("/");
+    if (typeof window === "undefined") return;
+    // 1. Nuke EVERY localStorage entry, not just supabase ones
+    try {
+      window.localStorage.clear();
+    } catch {
+      // ignore
     }
+    try {
+      window.sessionStorage.clear();
+    } catch {
+      // ignore
+    }
+    // 2. Try to invalidate the server-side token (fire-and-forget)
+    try {
+      signOut();
+    } catch {
+      // ignore
+    }
+    // 3. Cache-busted hard navigation to landing — this CANNOT fail.
+    window.location.href = "/?signedout=" + Date.now();
   };
 
   return (
