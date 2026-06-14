@@ -31,6 +31,7 @@ import Link from "next/link";
 import BackendStatus from "./components/BackendStatus";
 import AuthBadge from "./components/AuthBadge";
 import OnlineUsers from "./components/OnlineUsers";
+import LiveCursors from "./components/LiveCursors";
 import { useAuth } from "./lib/AuthProvider";
 import {
   useLiveSnapshots,
@@ -40,6 +41,7 @@ import {
   useLiveCellEdits,
   type CellEdit,
 } from "./lib/useLiveCellEdits";
+import { useLiveCursors } from "./lib/useLiveCursors";
 
 // The shape of the response we get from the backend after upload
 type CellValue = string | number | boolean | null;
@@ -870,6 +872,26 @@ function SpreadsheetView({
     // Light up the red dot if the panel isn't currently open
     setHasUnseenSnapshots((prev) => prev || !showHistory);
   });
+
+  // ====================================================
+  // PHASE 7 — LIVE CURSORS
+  // ====================================================
+  // Broadcast our mouse position as a % of viewport size; receive others'
+  const { remoteCursors, broadcastCursor } = useLiveCursors(
+    data.filename,
+    userName || "Guest",
+  );
+
+  // Track mouse position over the whole window — fires on every move
+  useEffect(() => {
+    const handleMouseMove = (event: MouseEvent) => {
+      const xPct = (event.clientX / window.innerWidth) * 100;
+      const yPct = (event.clientY / window.innerHeight) * 100;
+      broadcastCursor(xPct, yPct);
+    };
+    window.addEventListener("mousemove", handleMouseMove);
+    return () => window.removeEventListener("mousemove", handleMouseMove);
+  }, [broadcastCursor]);
 
   // ====================================================
   // PHASE 5 — LIVE CELL EDITS
@@ -2096,6 +2118,9 @@ function SpreadsheetView({
           {toast.text}
         </div>
       )}
+
+      {/* PHASE 7 — LIVE CURSORS overlay (renders on top of everything) */}
+      <LiveCursors cursors={remoteCursors} />
 
       {/* TOP HEADER BAR — sticky, with brand + actions */}
       <header className="sticky top-0 z-20 border-b border-slate-800 bg-slate-950/95 px-8 py-4 backdrop-blur">
