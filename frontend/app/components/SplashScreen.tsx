@@ -1,6 +1,6 @@
 // app/components/SplashScreen.tsx
 // ================================
-// Animated intro shown when the site first loads.
+// Animated intro shown on every page load (including refresh).
 //
 // Sequence (3 seconds total):
 //  0.0s: Logo pops in (scale + fade)
@@ -8,8 +8,6 @@
 //  0.9s: Tagline fades up
 //  1.4s: Loading dots appear and pulse
 //  2.5s: Whole splash fades out
-//
-// After dismiss, never shows again in the same session (sessionStorage).
 
 "use client";
 
@@ -21,15 +19,6 @@ export default function SplashScreen() {
   const [phase, setPhase] = useState<0 | 1 | 2 | 3>(0);
 
   useEffect(() => {
-    // Skip if we already showed it this session
-    if (typeof window !== "undefined") {
-      const seen = sessionStorage.getItem("chronosheet:splash-seen");
-      if (seen) {
-        setShow(false);
-        return;
-      }
-    }
-
     // Phase timing — each phase reveals one piece
     const t1 = setTimeout(() => setPhase(1), 300);   // title types in
     const t2 = setTimeout(() => setPhase(2), 900);   // tagline appears
@@ -37,7 +26,6 @@ export default function SplashScreen() {
     const tFade = setTimeout(() => setFadeOut(true), 2500);
     const tDone = setTimeout(() => {
       setShow(false);
-      sessionStorage.setItem("chronosheet:splash-seen", "1");
     }, 3200);
 
     return () => {
