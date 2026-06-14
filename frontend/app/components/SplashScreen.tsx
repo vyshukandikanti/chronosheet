@@ -57,7 +57,7 @@ export default function SplashScreen() {
       {/* Main content */}
       <div className="relative z-10 flex flex-col items-center px-6 text-center">
         {/* Logo (animated pop-in) */}
-        <div className="animate-splash-logo-in">
+        <div className="chronosheet-splash-logo">
           <div className="flex h-24 w-24 items-center justify-center rounded-3xl bg-gradient-to-br from-emerald-400 to-emerald-600 shadow-2xl shadow-emerald-500/40">
             <svg
               viewBox="0 0 32 32"
@@ -104,15 +104,15 @@ export default function SplashScreen() {
           }`}
         >
           <span
-            className="h-2.5 w-2.5 rounded-full bg-emerald-400 animate-splash-dot"
+            className="h-2.5 w-2.5 rounded-full bg-emerald-400 chronosheet-splash-dot"
             style={{ animationDelay: "0ms" }}
           />
           <span
-            className="h-2.5 w-2.5 rounded-full bg-emerald-400 animate-splash-dot"
+            className="h-2.5 w-2.5 rounded-full bg-emerald-400 chronosheet-splash-dot"
             style={{ animationDelay: "150ms" }}
           />
           <span
-            className="h-2.5 w-2.5 rounded-full bg-emerald-400 animate-splash-dot"
+            className="h-2.5 w-2.5 rounded-full bg-emerald-400 chronosheet-splash-dot"
             style={{ animationDelay: "300ms" }}
           />
         </div>
@@ -126,42 +126,7 @@ export default function SplashScreen() {
           ✨ Powered by Raft consensus and Artificial Intelligence
         </p>
       </div>
-
-      {/* Inline keyframes — kept here so the file is self-contained */}
-      <style jsx>{`
-        @keyframes splashLogoIn {
-          0% {
-            transform: scale(0.6) rotate(-8deg);
-            opacity: 0;
-          }
-          60% {
-            transform: scale(1.1) rotate(2deg);
-            opacity: 1;
-          }
-          100% {
-            transform: scale(1) rotate(0);
-            opacity: 1;
-          }
         }
-        :global(.animate-splash-logo-in) {
-          animation: splashLogoIn 700ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
-        }
-        @keyframes splashDot {
-          0%,
-          80%,
-          100% {
-            transform: scale(0.6);
-            opacity: 0.4;
-          }
-          40% {
-            transform: scale(1.2);
-            opacity: 1;
-          }
-        }
-        :global(.animate-splash-dot) {
-          animation: splashDot 1s ease-in-out infinite both;
-        }
-      `}</style>
     </div>
   );
 }
