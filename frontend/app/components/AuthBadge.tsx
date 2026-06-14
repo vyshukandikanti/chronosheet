@@ -9,12 +9,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { useAuth } from "../lib/AuthProvider";
 
 export default function AuthBadge() {
   const { user, loading, signOut } = useAuth();
-  const router = useRouter();
   const [menuOpen, setMenuOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -76,12 +74,15 @@ export default function AuthBadge() {
     setMenuOpen(false);
     try {
       await signOut();
-      // Send the user back to the landing page so they see Sign in / Sign up
-      router.push("/");
-      router.refresh();
     } catch (error) {
       console.error("[AuthBadge] Sign out failed:", error);
-    } finally {
+    }
+    // Hard reload back to the landing page. This guarantees the
+    // SpreadsheetView is torn down and any in-memory state cleared,
+    // so the user actually sees the signed-out experience.
+    if (typeof window !== "undefined") {
+      window.location.href = "/";
+    } else {
       setSigningOut(false);
     }
   };
