@@ -68,22 +68,39 @@ export default function AuthBadge() {
     "You";
   const initial = displayName.charAt(0).toUpperCase();
 
-  const handleSignOut = async () => {
+  const handleSignOut = () => {
     if (signingOut) return;
     setSigningOut(true);
     setMenuOpen(false);
-    try {
-      await signOut();
-    } catch (error) {
-      console.error("[AuthBadge] Sign out failed:", error);
-    }
-    // Hard reload back to the landing page. This guarantees the
-    // SpreadsheetView is torn down and any in-memory state cleared,
-    // so the user actually sees the signed-out experience.
+
+    // NUCLEAR OPTION: clear every trace of the auth session ourselves,
+    // then hard-reload. We do not await anything — this MUST succeed
+    // even if the Supabase signOut call hangs.
     if (typeof window !== "undefined") {
-      window.location.href = "/";
-    } else {
-      setSigningOut(false);
+      // 1. Wipe every Supabase localStorage key (they all start with "sb-")
+      try {
+        const localKeys = Object.keys(window.localStorage);
+        localKeys.forEach((key) => {
+          if (
+            key.startsWith("sb-") ||
+            key.toLowerCase().includes("supabase")
+          ) {
+            window.localStorage.removeItem(key);
+          }
+        });
+        // Also nuke session storage just in case
+        window.sessionStorage.clear();
+      } catch {
+        // ignore — we'll still force the reload
+      }
+
+      // 2. Fire-and-forget the Supabase API sign-out (sends a request
+      //    to invalidate the refresh token on the server side).
+      signOut().catch(() => {});
+
+      // 3. Force a hard reload to the landing page. This guarantees the
+      //    UI shows the signed-out state — no more being "stuck signed in".
+      window.location.replace("/");
     }
   };
 
